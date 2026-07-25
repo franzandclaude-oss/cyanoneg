@@ -2,19 +2,24 @@
 
 ## Current status (2026-07-25)
 
-**Phase 1 complete (2026-07-25).** All pipeline modules, the three target generators, the two
-starting profiles, the tkinter GUI (Process + Profiles tabs) and a 69-test suite — including the
-synthetic calibration round-trip — are implemented and passing. This revision also folds in direct
-measurements of the supplied chart and resolves two contradictions the earlier draft carried — see
-the *Resolved (2026-07-25)* notes on colour space and on starting profiles.
+**Phases 1 and 2 complete (2026-07-25).** All pipeline modules, the three target generators, the
+two starting profiles, `analyze.py`, and the tkinter GUI with all three tabs (Process, Profiles,
+**Calibrate** — the exposure → blocker → linearisation wizard) are implemented, with an 84-test
+suite passing. The headline Phase 2 test simulates a flatbed scan of a wedge print (scale change,
+rotation, perspective, blur, noise, every rotation/mirror orientation) and proves the full
+measurement chain recovers the correction to under 2% interior error. This revision also folds in
+direct measurements of the supplied chart and resolves two contradictions the earlier draft
+carried — see the *Resolved (2026-07-25)* notes on colour space and on starting profiles.
 
 Run the GUI with `.venv\Scripts\python.exe -m cyanoneg`; generate targets with
-`.venv\Scripts\python.exe -m cyanoneg.targets --all`; run tests with
+`.venv\Scripts\python.exe -m cyanoneg.targets --all`; analyse scans headless with
+`.venv\Scripts\python.exe -m cyanoneg.analyze wedge|grid <scan> <sidecar>`; run tests with
 `.venv\Scripts\python.exe -m pytest`.
 
-Remaining manual checks before the first calibration print: the driver check below, the Photoshop
-interop check (`.acv` in Curves, `.cube` via Color Lookup), and recording Film 1's real product
-name and batch. Next code phase is **Phase 2**: `analyze.py` and the Calibrate wizard.
+The tool is now ready for the first physical calibration. Before that print: the driver check
+below, the Photoshop interop check (`.acv` in Curves, `.cube` via Color Lookup), and recording
+Film 1's real product name and batch. Remaining code phase is **Phase 3** (refinement):
+zone-varying blocker, soft-proofing, batch processing.
 
 Address the user as **Steven** — never "Steve" (that is only the Windows username).
 

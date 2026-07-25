@@ -1,8 +1,12 @@
-"""cyanoneg GUI: Process and Profiles tabs (Calibrate arrives in Phase 2).
+"""cyanoneg GUI: Process, Profiles and Calibrate tabs.
 
 Deliberately plain tkinter — the value of this tool is in the pipeline, not the chrome.
 Processing runs on a worker thread so the window stays responsive; results and errors come
 back to the UI via ``after`` polling of a queue.
+
+The Calibrate tab walks the three-step wizard from PLAN.md: exposure (record SPE) →
+blocker (read the HSB grid scan) → linearisation (read the wedge scan, save the measured
+profile and export .cube/.acv).
 """
 
 from __future__ import annotations
@@ -34,6 +38,8 @@ from PIL import Image as PILImage
 from PIL import ImageTk
 
 from .. import imageio as cio
+from ..analyze import GridAnalysis, WedgeAnalysis, analyze_grid, analyze_wedge
+from ..blocker import hue_to_rgb
 from ..mono import DEFAULT_WEIGHTS, channel_noise, suggest_weights
 from ..pipeline import DEFAULT_OUTPUT_PPI, PrintSize, make_negative
 from ..profiles import PROFILE_DIR, Profile, list_profiles
@@ -56,11 +62,14 @@ class App:
         notebook.pack(fill=BOTH, expand=True)
         self.process_tab = ttk.Frame(notebook, padding=10)
         self.profiles_tab = ttk.Frame(notebook, padding=10)
+        self.calibrate_tab = ttk.Frame(notebook, padding=10)
         notebook.add(self.process_tab, text="Process")
         notebook.add(self.profiles_tab, text="Profiles")
+        notebook.add(self.calibrate_tab, text="Calibrate")
 
         self._build_process_tab()
         self._build_profiles_tab()
+        self._build_calibrate_tab()
         self._reload_profiles()
         self.root.after(100, self._poll_queue)
 
@@ -78,6 +87,11 @@ class App:
         self.profile_box["values"] = names
         if names and self.profile_var.get() not in names:
             self.profile_var.set(names[0])
+        self.cal_profile_box["values"] = names
+        if names and self.cal_profile_var.get() not in names:
+            # Calibration is for the paper profile being measured, not the linear baseline.
+            non_linear = [n for n in names if not self.profiles[n].lut.is_identity() or self.profiles[n].provisional]
+            self.cal_profile_var.set(non_linear[0] if non_linear else names[0])
         self._refresh_profile_list()
         self._on_profile_selected()
         if errors:
@@ -303,6 +317,15 @@ class App:
                 elif kind == "info":
                     self.process_button.config(state=NORMAL)
                     self.status.config(text=str(payload))
+                elif kind == "grid_result":
+                    self._grid_analysis = payload
+                    self._show_grid_result(payload)
+                elif kind == "wedge_result":
+                    self._wedge_analysis = payload
+                    self._show_wedge_result(payload)
+                elif kind == "cal_error":
+                    self.cal_status.config(text="")
+                    messagebox.showerror("Calibrate", str(payload))
                 elif kind == "error":
                     self.process_button.config(state=NORMAL)
                     self.status.config(text="")
@@ -422,6 +445,236 @@ class App:
             else ""
         )
         messagebox.showinfo("Targets", f"Wrote {tif}\nand {side}.{note}")
+
+
+    # ------------------------------------------------------------------ Calibrate tab
+
+    def _build_calibrate_tab(self) -> None:
+        tab = self.calibrate_tab
+        self._grid_analysis: GridAnalysis | None = None
+        self._wedge_analysis: WedgeAnalysis | None = None
+
+        top = ttk.Frame(tab)
+        top.pack(fill=X)
+        ttk.Label(top, text="Calibrating profile:").pack(side=LEFT)
+        self.cal_profile_var = StringVar()
+        self.cal_profile_box = ttk.Combobox(top, textvariable=self.cal_profile_var, state="readonly", width=30)
+        self.cal_profile_box.pack(side=LEFT, padx=6)
+        self.cal_status = ttk.Label(top, text="", foreground="#205020")
+        self.cal_status.pack(side=LEFT, padx=10)
+
+        # --- Step 1: exposure -------------------------------------------------
+        step1 = ttk.LabelFrame(tab, text="Step 1 — Exposure (SPE)", padding=8)
+        step1.pack(fill=X, pady=(8, 4))
+        ttk.Label(
+            step1,
+            text=(
+                "Print the exposure strip through the linear profile, expose progressively "
+                "(cover one zone per interval), process, dry. SPE is the shortest time whose "
+                "clear half matches the next zone's."
+            ),
+            wraplength=860,
+        ).grid(row=0, column=0, columnspan=6, sticky=W)
+        ttk.Button(step1, text="Generate strip", command=lambda: self._generate_target("exposure")).grid(
+            row=1, column=0, pady=4, sticky=W
+        )
+        ttk.Label(step1, text="SPE seconds:").grid(row=1, column=1, padx=(16, 2))
+        self.spe_var = StringVar()
+        ttk.Entry(step1, textvariable=self.spe_var, width=8).grid(row=1, column=2)
+        ttk.Label(step1, text="UV source:").grid(row=1, column=3, padx=(12, 2))
+        self.uv_var = StringVar()
+        ttk.Entry(step1, textvariable=self.uv_var, width=28).grid(row=1, column=4)
+        ttk.Button(step1, text="Save to profile", command=self._save_exposure).grid(row=1, column=5, padx=8)
+
+        # --- Step 2: blocker --------------------------------------------------
+        step2 = ttk.LabelFrame(tab, text="Step 2 — Blocker (HSB grid)", padding=8)
+        step2.pack(fill=X, pady=4)
+        ttk.Button(step2, text="Generate grid", command=lambda: self._generate_target("grid")).grid(
+            row=0, column=0, sticky=W
+        )
+        ttk.Label(step2, text="Scan of grid print:").grid(row=0, column=1, padx=(16, 2))
+        self.grid_scan_var = StringVar()
+        ttk.Entry(step2, textvariable=self.grid_scan_var, width=36).grid(row=0, column=2)
+        ttk.Button(step2, text="…", width=3, command=lambda: self._pick_scan(self.grid_scan_var)).grid(
+            row=0, column=3, padx=2
+        )
+        ttk.Button(step2, text="Analyse", command=self._analyse_grid).grid(row=0, column=4, padx=8)
+        self.grid_result = ttk.Label(step2, text="(no analysis yet)", justify=LEFT, font=("Consolas", 9))
+        self.grid_result.grid(row=1, column=0, columnspan=5, sticky=W, pady=4)
+        apply_row = ttk.Frame(step2)
+        apply_row.grid(row=2, column=0, columnspan=5, sticky=W)
+        ttk.Label(apply_row, text="Apply hue°:").pack(side=LEFT)
+        self.hue_var = StringVar()
+        ttk.Entry(apply_row, textvariable=self.hue_var, width=6).pack(side=LEFT, padx=2)
+        ttk.Label(apply_row, text="saturation:").pack(side=LEFT, padx=(8, 2))
+        self.sat_var = StringVar()
+        ttk.Entry(apply_row, textvariable=self.sat_var, width=6).pack(side=LEFT)
+        ttk.Button(apply_row, text="Save blocker to profile", command=self._save_blocker).pack(side=LEFT, padx=10)
+
+        # --- Step 3: linearise ------------------------------------------------
+        step3 = ttk.LabelFrame(tab, text="Step 3 — Linearisation (256-step wedge)", padding=8)
+        step3.pack(fill=BOTH, expand=True, pady=4)
+        ttk.Button(step3, text="Generate wedge", command=lambda: self._generate_target("wedge")).grid(
+            row=0, column=0, sticky=W
+        )
+        ttk.Label(step3, text="Scan of wedge print:").grid(row=0, column=1, padx=(16, 2))
+        self.wedge_scan_var = StringVar()
+        ttk.Entry(step3, textvariable=self.wedge_scan_var, width=36).grid(row=0, column=2)
+        ttk.Button(step3, text="…", width=3, command=lambda: self._pick_scan(self.wedge_scan_var)).grid(
+            row=0, column=3, padx=2
+        )
+        ttk.Button(step3, text="Analyse", command=self._analyse_wedge).grid(row=0, column=4, padx=8)
+        self.wedge_result = ttk.Label(step3, text="(no analysis yet)", justify=LEFT, font=("Consolas", 9))
+        self.wedge_result.grid(row=1, column=0, columnspan=4, sticky="nw", pady=4)
+        from tkinter import Canvas
+
+        self.curve_canvas = Canvas(step3, width=220, height=220, background="#ffffff", highlightthickness=1)
+        self.curve_canvas.grid(row=1, column=4, rowspan=2, padx=8, pady=4)
+        self.save_measured_button = ttk.Button(
+            step3, text="Save measured profile (+ .cube/.acv)", command=self._save_measured, state=DISABLED
+        )
+        self.save_measured_button.grid(row=2, column=0, columnspan=3, sticky=W, pady=4)
+
+    def _pick_scan(self, var: StringVar) -> None:
+        path = filedialog.askopenfilename(
+            title="Choose scan", filetypes=[("Images", "*.tif *.tiff *.png *.jpg *.jpeg"), ("All", "*.*")]
+        )
+        if path:
+            var.set(path)
+
+    def _cal_profile(self) -> Profile | None:
+        profile = self.profiles.get(self.cal_profile_var.get())
+        if profile is None:
+            messagebox.showinfo("Calibrate", "Choose a profile to calibrate first.")
+        return profile
+
+    def _save_cal_profile(self, profile: Profile) -> None:
+        path = PROFILE_DIR / f"{self.cal_profile_var.get()}.json"
+        profile.save(path)
+        self._reload_profiles()
+        self.cal_status.config(text=f"Saved {path.name}")
+
+    def _save_exposure(self) -> None:
+        profile = self._cal_profile()
+        if profile is None:
+            return
+        try:
+            spe = float(self.spe_var.get())
+        except ValueError:
+            messagebox.showerror("Calibrate", "SPE must be a number of seconds.")
+            return
+        profile.exposure = {"spe_seconds": spe, "uv_source": self.uv_var.get().strip()}
+        self._save_cal_profile(profile)
+
+    def _sidecar_for(self, kind: str) -> Path | None:
+        path = Path("targets") / f"{kind}.json"
+        if not path.exists():
+            messagebox.showerror(
+                "Calibrate",
+                f"No sidecar at {path}. Generate the target here first — the sidecar written "
+                "at generation time is what maps the scan back to patch values.",
+            )
+            return None
+        return path
+
+    def _analyse_grid(self) -> None:
+        scan = self.grid_scan_var.get().strip()
+        sidecar = self._sidecar_for("blocker_grid")
+        if not scan or sidecar is None:
+            if not scan:
+                messagebox.showinfo("Calibrate", "Choose the scan of the grid print.")
+            return
+        self.cal_status.config(text="Analysing grid…")
+
+        def work() -> None:
+            try:
+                self.queue.put(("grid_result", analyze_grid(scan, sidecar)))
+            except Exception as e:  # noqa: BLE001
+                self.queue.put(("cal_error", f"Grid analysis failed: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_grid_result(self, result: GridAnalysis) -> None:
+        self.cal_status.config(text="Grid analysed.")
+        self.grid_result.config(text=result.summary())
+        self.hue_var.set(f"{result.best['hue_deg']:g}")
+        if result.recommended_saturation is not None:
+            self.sat_var.set(f"{result.recommended_saturation:g}")
+
+    def _save_blocker(self) -> None:
+        profile = self._cal_profile()
+        if profile is None:
+            return
+        try:
+            hue = float(self.hue_var.get())
+            sat = float(self.sat_var.get())
+        except ValueError:
+            messagebox.showerror("Calibrate", "Enter numeric hue and saturation (run Analyse first).")
+            return
+        profile.blocker = {
+            "model": "fixed_hue",
+            "rgb": list(hue_to_rgb(hue)),
+            "saturation": sat,
+        }
+        self._save_cal_profile(profile)
+
+    def _analyse_wedge(self) -> None:
+        scan = self.wedge_scan_var.get().strip()
+        sidecar = self._sidecar_for("step_wedge")
+        if not scan or sidecar is None:
+            if not scan:
+                messagebox.showinfo("Calibrate", "Choose the scan of the wedge print.")
+            return
+        self.cal_status.config(text="Analysing wedge…")
+
+        def work() -> None:
+            try:
+                self.queue.put(("wedge_result", analyze_wedge(scan, sidecar)))
+            except Exception as e:  # noqa: BLE001
+                self.queue.put(("cal_error", f"Wedge analysis failed: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_wedge_result(self, result: WedgeAnalysis) -> None:
+        self.cal_status.config(text="Wedge analysed.")
+        self.wedge_result.config(text=result.summary())
+        self.save_measured_button.config(state=NORMAL)
+        # Draw the derived correction curve.
+        c = self.curve_canvas
+        c.delete("all")
+        size = 220
+        c.create_line(0, size, size, 0, fill="#cccccc")  # identity reference
+        points = []
+        for i, v in enumerate(result.lut.values):
+            x = i / (len(result.lut.values) - 1) * (size - 1)
+            y = (1.0 - v) * (size - 1)
+            points.extend((x, y))
+        c.create_line(*points, fill="#1040a0", width=2)
+
+    def _save_measured(self) -> None:
+        profile = self._cal_profile()
+        result = self._wedge_analysis
+        if profile is None or result is None:
+            return
+        import datetime
+
+        profile.lut = result.lut
+        profile.provisional = False
+        profile.measurements = {
+            "raw_patches": result.raw_patches,
+            "scan_date": datetime.date.today().isoformat(),
+            "density_range": round(result.density_range, 3),
+            "spikes": result.spikes,
+        }
+        self._save_cal_profile(profile)
+        stem = PROFILE_DIR / self.cal_profile_var.get()
+        result.lut.export_cube(stem.with_suffix(".cube"))
+        result.lut.export_acv(stem.with_suffix(".acv"))
+        messagebox.showinfo(
+            "Calibrate",
+            f"Measured profile saved.\nExported {stem.with_suffix('.cube').name} and "
+            f"{stem.with_suffix('.acv').name} for Photoshop QA.",
+        )
 
 
 def main() -> int:
