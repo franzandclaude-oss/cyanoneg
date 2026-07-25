@@ -15,5 +15,8 @@ __pycache__/
 targets/*.tif
 targets/*.tiff
 
-# Processed negatives
+# Processed negatives. Large, and reproducible from the source positive plus the
+# profile that made them, so the recipe is tracked and the output is not.
 out/
+*_negative.tif
+EDN_RGB_256_2.tif

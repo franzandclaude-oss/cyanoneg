@@ -80,6 +80,45 @@ class TestStepOrder:
         assert abs(green - (1 - value) ** 2) > 0.15  # rules out the wrong order
 
 
+class TestPrintSize:
+    """A portrait image asked for 240 × 180 must get 240 mm on its long edge.
+
+    Without orientation matching it fits to the 180 mm height and comes out smaller than
+    requested, with nothing to say so.
+    """
+
+    def test_portrait_image_swaps_the_box(self):
+        assert PrintSize(240, 180).oriented_for(1000, 1500) == PrintSize(180, 240)
+
+    def test_landscape_image_leaves_the_box_alone(self):
+        assert PrintSize(240, 180).oriented_for(1500, 1000) == PrintSize(240, 180)
+
+    def test_square_box_is_never_swapped(self):
+        assert PrintSize(200, 200).oriented_for(1000, 1500) == PrintSize(200, 200)
+
+    def test_long_edge_matches_the_long_side_of_the_box(self):
+        for src_w, src_h in ((1000, 1500), (1500, 1000), (1200, 1600)):
+            box = PrintSize(240, 180).oriented_for(src_w, src_h)
+            scale = box.fit_scale(src_w, src_h, 360)
+            long_mm = max(src_w, src_h) * scale / 360 * 25.4
+            assert long_mm == pytest.approx(240, abs=0.5)
+
+    def test_pipeline_honours_orientation(self):
+        portrait = Image(np.full((1500, 1000, 3), 0.5, dtype=np.float32), "srgb", ppi=300)
+        negative = make_negative(portrait, _profile(), PrintSize(240, 180), output_ppi=360)
+        h, w, _ = negative.data.shape
+        assert h / 360 * 25.4 == pytest.approx(240, abs=1)
+        assert w / 360 * 25.4 == pytest.approx(160, abs=1)
+
+    def test_auto_orient_can_be_turned_off(self):
+        portrait = Image(np.full((1500, 1000, 3), 0.5, dtype=np.float32), "srgb", ppi=300)
+        negative = make_negative(
+            portrait, _profile(), PrintSize(240, 180), output_ppi=360, auto_orient=False
+        )
+        h, _, _ = negative.data.shape
+        assert h / 360 * 25.4 == pytest.approx(180, abs=1)
+
+
 class TestGeometryAndOutput:
     def test_fits_within_print_size_and_mirrored(self, ramp):
         negative = make_negative(ramp, _profile(), PrintSize(100, 50), output_ppi=360)

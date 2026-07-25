@@ -218,12 +218,27 @@ class App:
         ttk.Entry(holder, textvariable=self.ppi_var, width=6).pack(side=LEFT)
         ttk.Label(holder, text="ppi", style="Muted.TLabel").pack(side=LEFT, padx=(theme.GAP, 0))
 
-        holder = self._form_row(output_box, "Save to", 1)
+        self.auto_orient_var = StringVar(value="1")
+        ttk.Checkbutton(
+            output_box,
+            text="Match orientation to the image",
+            variable=self.auto_orient_var,
+            onvalue="1",
+            offvalue="0",
+        ).grid(row=1, column=1, sticky=W)
+
+        holder = self._form_row(output_box, "Save to", 2)
         self.output_var = StringVar()
         ttk.Entry(holder, textvariable=self.output_var, width=theme.FIELD_WIDTH).pack(side=LEFT)
         ttk.Button(holder, text="…", width=3, style="Small.TButton", command=self._pick_output).pack(
             side=LEFT, padx=(theme.GAP, 0)
         )
+
+        self.size_note = ttk.Label(output_box, text="", style="Mono.TLabel")
+        self.size_note.grid(row=3, column=0, columnspan=2, sticky=W, pady=(theme.ROW_GAP, 0))
+
+        for var in (self.source_var, self.width_var, self.height_var, self.ppi_var, self.auto_orient_var):
+            var.trace_add("write", lambda *_: self._update_size_note())
 
         self.process_button = ttk.Button(
             left, text="Make negative", style="Accent.TButton", command=self._process
@@ -232,6 +247,27 @@ class App:
 
         self.status = ttk.Label(left, text="", wraplength=420, style="OK.TLabel")
         self.status.pack(fill=X)
+
+    def _update_size_note(self) -> None:
+        """Show the print size this image will actually come out at, before committing."""
+        source = self.source_var.get().strip()
+        if not source or not Path(source).is_file():
+            self.size_note.config(text="")
+            return
+        try:
+            box = PrintSize(float(self.width_var.get()), float(self.height_var.get()))
+            ppi = float(self.ppi_var.get())
+            with PILImage.open(source) as im:
+                src_w, src_h = im.size
+        except Exception:  # noqa: BLE001 - a half-typed field is not an error worth showing
+            self.size_note.config(text="")
+            return
+        if self.auto_orient_var.get() == "1":
+            box = box.oriented_for(src_w, src_h)
+        scale = box.fit_scale(src_w, src_h, ppi)
+        self.size_note.config(
+            text=f"→ prints {src_w * scale / ppi * 25.4:.0f} × {src_h * scale / ppi * 25.4:.0f} mm"
+        )
 
     def _pick_source(self) -> None:
         path = filedialog.askopenfilename(
@@ -331,6 +367,7 @@ class App:
                     weights=weights,
                     space=space,  # type: ignore[arg-type]
                     raw_scan=raw,
+                    auto_orient=self.auto_orient_var.get() == "1",
                 )
                 self.queue.put(("done", (output, negative)))
             except cio.ColourSpaceError as e:

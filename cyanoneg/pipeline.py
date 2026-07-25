@@ -46,6 +46,26 @@ class PrintSize:
             int(round(self.height_mm / 25.4 * ppi)),
         )
 
+    def fit_scale(self, src_width: int, src_height: int, ppi: float) -> float:
+        box_w, box_h = self.pixels(ppi)
+        return min(box_w / src_width, box_h / src_height)
+
+    def oriented_for(self, src_width: int, src_height: int) -> PrintSize:
+        """Swap width and height if that fits the image larger.
+
+        Entering "240 × 180" means a sheet of that size, not a commitment to landscape.
+        Without this, a portrait image in a landscape box fits to the 180 mm height and
+        the long edge silently comes out at 180 mm instead of 240 — a smaller print than
+        asked for, with no warning.
+        """
+        if src_width <= 0 or src_height <= 0 or self.width_mm == self.height_mm:
+            return self
+        swapped = PrintSize(self.height_mm, self.width_mm)
+        # ppi cancels out of the comparison; any positive value gives the same answer.
+        if swapped.fit_scale(src_width, src_height, 360) > self.fit_scale(src_width, src_height, 360):
+            return swapped
+        return self
+
 
 # --------------------------------------------------------------------------- steps
 # Each step is a named function so the ordering test can patch and record them.
@@ -68,10 +88,12 @@ def step_apply_lut(image: Image, profile: Profile) -> Image:
     )
 
 
-def step_resize(image: Image, size: PrintSize, ppi: float) -> Image:
+def step_resize(image: Image, size: PrintSize, ppi: float, auto_orient: bool = True) -> Image:
     """Fit within the print size, resampling in linear light to avoid halo artefacts."""
-    box_w, box_h = size.pixels(ppi)
     src_w, src_h = image.size
+    if auto_orient:
+        size = size.oriented_for(src_w, src_h)
+    box_w, box_h = size.pixels(ppi)
     scale = min(box_w / src_w, box_h / src_h)
     dst = (max(1, int(round(src_w * scale))), max(1, int(round(src_h * scale))))
 
@@ -123,12 +145,17 @@ def make_negative(
     weights: tuple[float, float, float] = DEFAULT_WEIGHTS,
     space: cio.Space | None = None,
     raw_scan: bool = False,
+    auto_orient: bool = True,
 ) -> Image:
     """Run the full positive → negative pipeline.
 
     ``raw_scan=True`` is the flagged path for un-inverted lab scans: the source is a
     negative, so it is inverted to a positive immediately after loading, and the rest of
     the pipeline is unchanged.
+
+    ``auto_orient`` (default on) lets the print size follow the image's orientation, so a
+    portrait image asked to print at 240 × 180 mm gets 240 mm on its long edge rather than
+    being fitted to the 180 mm height.
 
     Returns the final negative; writes it to ``output_path`` when given.
     """
@@ -139,7 +166,7 @@ def make_negative(
 
     image = step_mono(image, weights)  # 2
     image = step_apply_lut(image, profile)  # 3 — on the positive, before inversion
-    image = step_resize(image, print_size, output_ppi)  # 4
+    image = step_resize(image, print_size, output_ppi, auto_orient)  # 4
     image = step_invert(image)  # 5
     image = step_blocker(image, profile)  # 6
     image = step_flip(image)  # 7
@@ -232,6 +259,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ppi", type=float, default=DEFAULT_OUTPUT_PPI)
     parser.add_argument("--space", default=None, help="override source colour space if untagged")
     parser.add_argument("--raw-scan", action="store_true", help="sources are un-inverted negatives")
+    parser.add_argument(
+        "--no-auto-orient",
+        action="store_true",
+        help="keep the print box as given instead of matching each image's orientation",
+    )
     args = parser.parse_args(argv)
 
     profile_path = args.profile if args.profile.exists() else PROFILE_DIR / f"{args.profile}.json"
@@ -251,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
         output_ppi=args.ppi,
         space=args.space,
         raw_scan=args.raw_scan,
+        auto_orient=not args.no_auto_orient,
     )
     print(result.summary())
     return 1 if result.failed else 0
