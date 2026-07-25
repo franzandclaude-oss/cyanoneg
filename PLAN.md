@@ -2,24 +2,60 @@
 
 ## Current status (2026-07-25)
 
-**Phases 1 and 2 complete (2026-07-25).** All pipeline modules, the three target generators, the
-two starting profiles, `analyze.py`, and the tkinter GUI with all three tabs (Process, Profiles,
-**Calibrate** — the exposure → blocker → linearisation wizard) are implemented, with an 84-test
-suite passing. The headline Phase 2 test simulates a flatbed scan of a wedge print (scale change,
-rotation, perspective, blur, noise, every rotation/mirror orientation) and proves the full
-measurement chain recovers the correction to under 2% interior error. This revision also folds in
-direct measurements of the supplied chart and resolves two contradictions the earlier draft
-carried — see the *Resolved (2026-07-25)* notes on colour space and on starting profiles.
+**All three phases complete (2026-07-25).** Pipeline, target generators, `analyze.py`, the
+zone-varying blocker, soft-proofing, batch processing, and the tkinter GUI with four tabs
+(Process, Profiles, Calibrate, Batch). 125 tests pass, including the two that matter most: the
+synthetic calibration round-trip, and a simulated flatbed scan of a wedge print (scale change,
+rotation, perspective, blur, noise, every rotation/mirror orientation) proving the measurement
+chain recovers the correction to under 2% interior error.
+
+This revision also folds in direct measurements of the supplied chart and resolves two
+contradictions the earlier draft carried — see the *Resolved (2026-07-25)* notes on colour space
+and on starting profiles — and records the polarity fix below.
 
 Run the GUI with `.venv\Scripts\python.exe -m cyanoneg`; generate targets with
-`.venv\Scripts\python.exe -m cyanoneg.targets --all`; analyse scans headless with
-`.venv\Scripts\python.exe -m cyanoneg.analyze wedge|grid <scan> <sidecar>`; run tests with
-`.venv\Scripts\python.exe -m pytest`.
+`.venv\Scripts\python.exe -m cyanoneg.targets --all` (add `--zone-grid` when upgrading to the zone
+blocker); analyse scans headless with
+`.venv\Scripts\python.exe -m cyanoneg.analyze wedge|grid|zone-grid <scan> <sidecar>`; batch-process
+with `.venv\Scripts\python.exe -m cyanoneg.pipeline <folder> --profile linear --width W --height H`;
+run tests with `.venv\Scripts\python.exe -m pytest`.
 
-The tool is now ready for the first physical calibration. Before that print: the driver check
-below, the Photoshop interop check (`.acv` in Curves, `.cube` via Color Lookup), and recording
-Film 1's real product name and batch. Remaining code phase is **Phase 3** (refinement):
-zone-varying blocker, soft-proofing, batch processing.
+The tool is ready for the first physical calibration. Before that print: the driver check below,
+the Photoshop interop check (`.acv` in Curves, `.cube` via Color Lookup), and recording Film 1's
+real product name and batch.
+
+### Fixed (2026-07-25): inverted tonal polarity
+
+The pipeline produced tonally inverted prints, and every test passed because the whole system was
+self-consistently wrong. `apply_blocker` treated its input as ink density, but `step_invert` hands
+it the negative's *pixel value* — the opposite quantity — so a bright area in the positive laid
+down no ink at all and the paper went dark where it should have stayed white. Building the
+soft proof, the first thing in the project that models what the paper actually does, exposed it.
+
+The convention is now stated once in `blocker.py` and used everywhere: **`v` is the negative's
+greyscale pixel value; `v = 0` is black — maximum ink, UV blocked, paper stays white; `v = 1` is
+white — clear film, UV passes, paper goes dark.** Since `v = 1 - positive`, a bright positive
+gives heavy ink, which is what a real digital negative looks like.
+
+`tests/test_blocker.py` now asserts this against the physics rather than the implementation, so a
+self-consistently inverted system cannot satisfy it.
+
+### Phase 3 as built
+
+- **Zone-varying blocker** — `zone_hue` profiles hold density → RGB control points, interpolated
+  per channel, exported as a 3D `.cube`. `targets.py --zone-grid` sweeps hue at five densities and
+  `analyze_zone_grid` reports the best hue per zone **and whether the hue actually varies** — the
+  plan only licenses this upgrade if measurements justify it, so a run that finds one winning hue
+  everywhere says to stay with fixed-hue. Two-point zone data reproduces the fixed-hue model to
+  float precision, so existing profiles are unaffected.
+- **Soft proof** (`proof.py`) — predicts the print from the profile's own measured patches and
+  **refuses to render without them**; an invented proof would look authoritative while being
+  fiction. Selectable in the Process tab beside the film preview.
+- **Batch** — `batch_negatives` over a folder, collecting per-file failures instead of aborting,
+  with a CLI and a GUI tab. It refuses to overwrite its own sources.
+- **GUI styling** is centralised in `cyanoneg/gui/theme.py`. Note that the native Windows ttk
+  theme ignores most colour settings; switching `THEME` to `clam` is the entry point for a real
+  visual redesign.
 
 Address the user as **Steven** — never "Steve" (that is only the Windows username).
 
@@ -266,7 +302,7 @@ immediately. Phase 1 gets usable negatives out of the printer before the calibra
 - GUI Calibrate tab: 3-step wizard (exposure → blocker → linearisation)
 - First real measured profile
 
-**Phase 3 — refinement**
+**Phase 3 — refinement** *(complete)*
 - Zone-varying colour blocker (EDN-style 3D LUT)
 - Soft-proof preview in GUI
 - Batch processing

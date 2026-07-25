@@ -17,7 +17,8 @@ negative, which is exactly the failure mode this tool exists to remove.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -146,3 +147,114 @@ def make_negative(
     if output_path is not None:
         cio.save_tiff(output_path, image)  # 8
     return image
+
+
+# --------------------------------------------------------------------------- batch
+
+
+SOURCE_SUFFIXES = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
+
+
+@dataclass
+class BatchResult:
+    """Outcome of one batch run. Failures are collected, never raised mid-run."""
+
+    written: list[Path] = field(default_factory=list)
+    failed: list[tuple[Path, str]] = field(default_factory=list)
+
+    @property
+    def total(self) -> int:
+        return len(self.written) + len(self.failed)
+
+    def summary(self) -> str:
+        lines = [f"{len(self.written)} of {self.total} negatives written"]
+        lines += [f"  FAILED {path.name}: {why}" for path, why in self.failed]
+        return "\n".join(lines)
+
+
+def batch_negatives(
+    sources: Iterable[str | Path] | str | Path,
+    profile: Profile,
+    print_size: PrintSize,
+    output_dir: str | Path,
+    *,
+    suffix: str = "_negative",
+    progress=None,
+    **kwargs,
+) -> BatchResult:
+    """Process many positives with one profile.
+
+    ``sources`` may be a directory (scanned non-recursively for image files) or an
+    explicit iterable of paths. One bad file does not stop the run: its error is recorded
+    and the rest continue, because discovering at file 200 that file 3 was untagged is
+    not a reason to lose the other 197.
+
+    ``progress`` is called as ``progress(index, total, path)`` before each file.
+    """
+    if isinstance(sources, (str, Path)) and Path(sources).is_dir():
+        paths = sorted(p for p in Path(sources).iterdir() if p.suffix.lower() in SOURCE_SUFFIXES)
+    elif isinstance(sources, (str, Path)):
+        paths = [Path(sources)]
+    else:
+        paths = [Path(p) for p in sources]
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    result = BatchResult()
+
+    for i, path in enumerate(paths):
+        if progress is not None:
+            progress(i, len(paths), path)
+        destination = output_dir / f"{path.stem}{suffix}.tif"
+        if destination.resolve() == path.resolve():
+            result.failed.append((path, "output would overwrite the source"))
+            continue
+        try:
+            make_negative(path, profile, print_size, output_path=destination, **kwargs)
+        except Exception as e:  # noqa: BLE001 - one bad file must not end the run
+            result.failed.append((path, str(e)))
+        else:
+            result.written.append(destination)
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    from .profiles import PROFILE_DIR
+
+    parser = argparse.ArgumentParser(prog="cyanoneg.pipeline", description="Batch-process positives")
+    parser.add_argument("sources", type=Path, help="a directory of positives, or one image")
+    parser.add_argument("--profile", type=Path, required=True, help="profile .json (or a name in profiles/)")
+    parser.add_argument("--out", type=Path, default=Path("out"))
+    parser.add_argument("--width", type=float, required=True, help="print width in mm")
+    parser.add_argument("--height", type=float, required=True, help="print height in mm")
+    parser.add_argument("--ppi", type=float, default=DEFAULT_OUTPUT_PPI)
+    parser.add_argument("--space", default=None, help="override source colour space if untagged")
+    parser.add_argument("--raw-scan", action="store_true", help="sources are un-inverted negatives")
+    args = parser.parse_args(argv)
+
+    profile_path = args.profile if args.profile.exists() else PROFILE_DIR / f"{args.profile}.json"
+    profile = Profile.load(profile_path)
+    if profile.provisional:
+        print(f"note: {profile.name!r} is provisional — tones are a starting point, not a calibration")
+
+    def show(i: int, total: int, path: Path) -> None:
+        print(f"[{i + 1}/{total}] {path.name}")
+
+    result = batch_negatives(
+        args.sources,
+        profile,
+        PrintSize(args.width, args.height),
+        args.out,
+        progress=show,
+        output_ppi=args.ppi,
+        space=args.space,
+        raw_scan=args.raw_scan,
+    )
+    print(result.summary())
+    return 1 if result.failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,4 +1,4 @@
-"""cyanoneg GUI: Process, Profiles and Calibrate tabs.
+"""cyanoneg GUI: Process, Profiles, Calibrate and Batch tabs.
 
 Deliberately plain tkinter — the value of this tool is in the pipeline, not the chrome.
 Processing runs on a worker thread so the window stays responsive; results and errors come
@@ -9,7 +9,8 @@ inline here, so restyling the interface is a change to that one module.
 
 The Calibrate tab walks the three-step wizard from PLAN.md: exposure (record SPE) →
 blocker (read the HSB grid scan) → linearisation (read the wedge scan, save the measured
-profile and export .cube/.acv).
+profile and export .cube/.acv). The Process tab can preview either the film or a soft
+proof of the predicted print, the latter only where the profile carries measurements.
 """
 
 from __future__ import annotations
@@ -44,7 +45,9 @@ from .. import imageio as cio
 from ..analyze import GridAnalysis, WedgeAnalysis, analyze_grid, analyze_wedge
 from ..blocker import hue_to_rgb
 from ..mono import DEFAULT_WEIGHTS, channel_noise, suggest_weights
-from ..pipeline import DEFAULT_OUTPUT_PPI, PrintSize, make_negative
+from ..imageio import Image
+from ..pipeline import DEFAULT_OUTPUT_PPI, PrintSize, batch_negatives, make_negative
+from ..proof import can_proof, soft_proof
 from ..profiles import PROFILE_DIR, Profile, list_profiles
 from ..targets import blocker_grid, exposure_strip, step_wedge
 from . import theme
@@ -66,13 +69,16 @@ class App:
         self.process_tab = ttk.Frame(notebook, padding=theme.PAD)
         self.profiles_tab = ttk.Frame(notebook, padding=theme.PAD)
         self.calibrate_tab = ttk.Frame(notebook, padding=theme.PAD)
+        self.batch_tab = ttk.Frame(notebook, padding=theme.PAD)
         notebook.add(self.process_tab, text="Process")
         notebook.add(self.profiles_tab, text="Profiles")
         notebook.add(self.calibrate_tab, text="Calibrate")
+        notebook.add(self.batch_tab, text="Batch")
 
         self._build_process_tab()
         self._build_profiles_tab()
         self._build_calibrate_tab()
+        self._build_batch_tab()
         self._reload_profiles()
         self.root.after(100, self._poll_queue)
 
@@ -90,6 +96,9 @@ class App:
         self.profile_box["values"] = names
         if names and self.profile_var.get() not in names:
             self.profile_var.set(names[0])
+        self.batch_profile_box["values"] = names
+        if names and self.batch_profile_var.get() not in names:
+            self.batch_profile_var.set(self.profile_var.get() or names[0])
         self.cal_profile_box["values"] = names
         if names and self.cal_profile_var.get() not in names:
             # Calibration is for the paper profile being measured, not the linear baseline.
@@ -109,11 +118,21 @@ class App:
         tab = self.process_tab
         left = ttk.Frame(tab)
         left.pack(side=LEFT, fill=BOTH, expand=False, padx=(0, 10))
-        right = ttk.LabelFrame(tab, text="Preview (print orientation is mirrored — this is the film)")
+        right = ttk.LabelFrame(tab, text="Preview")
         right.pack(side=RIGHT, fill=BOTH, expand=True)
 
+        modes = ttk.Frame(right)
+        modes.pack(fill=X, padx=theme.GAP, pady=(theme.GAP, 0))
+        self.preview_mode = StringVar(value="film")
+        for value, label in (("film", "Film (mirrored)"), ("proof", "Soft proof")):
+            ttk.Radiobutton(
+                modes, text=label, value=value, variable=self.preview_mode, command=self._redraw_preview
+            ).pack(side=LEFT, padx=(0, theme.WIDE_GAP))
+        self.proof_note = ttk.Label(modes, text="", foreground=theme.WARN, wraplength=300)
+        self.proof_note.pack(side=LEFT)
+
         self.preview_label = ttk.Label(right, anchor="center")
-        self.preview_label.pack(fill=BOTH, expand=True, padx=6, pady=6)
+        self.preview_label.pack(fill=BOTH, expand=True, padx=theme.GAP, pady=theme.GAP)
 
         row = 0
         grid = ttk.Frame(left)
@@ -284,7 +303,7 @@ class App:
                     space=space,  # type: ignore[arg-type]
                     raw_scan=raw,
                 )
-                self.queue.put(("done", (output, negative.data)))
+                self.queue.put(("done", (output, negative)))
             except cio.ColourSpaceError as e:
                 self.queue.put(("error", f"{e}\n\nSet 'Colour space' explicitly and retry."))
             except Exception as e:  # noqa: BLE001
@@ -292,7 +311,28 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _show_preview(self, data: np.ndarray) -> None:
+    def _show_preview(self, negative: Image) -> None:
+        self._last_negative = negative
+        self._redraw_preview()
+
+    def _redraw_preview(self) -> None:
+        negative = getattr(self, "_last_negative", None)
+        if negative is None:
+            return
+        profile = self._current_profile()
+        data = negative.data
+        self.proof_note.config(text="")
+
+        if self.preview_mode.get() == "proof":
+            if profile is None or not can_proof(profile):
+                self.proof_note.config(
+                    text="No measured response in this profile — calibrate first; "
+                    "a proof without measurements would be invented."
+                )
+                self.preview_mode.set("film")
+            else:
+                data = soft_proof(negative, profile).data
+
         arr = (np.clip(data, 0.0, 1.0) * 255).astype(np.uint8)
         pil = PILImage.fromarray(arr)
         pil.thumbnail((theme.PREVIEW_MAX, theme.PREVIEW_MAX))
@@ -304,10 +344,10 @@ class App:
             while True:
                 kind, payload = self.queue.get_nowait()
                 if kind == "done":
-                    output, data = payload
+                    output, negative = payload
                     self.process_button.config(state=NORMAL)
                     self.status.config(text=f"Saved {output}")
-                    self._show_preview(data)
+                    self._show_preview(negative)
                 elif kind == "noise":
                     report, suggested = payload
                     self.status.config(text=f"Noise σ  {report}")
@@ -326,6 +366,21 @@ class App:
                 elif kind == "wedge_result":
                     self._wedge_analysis = payload
                     self._show_wedge_result(payload)
+                elif kind == "batch_progress":
+                    i, total, name = payload
+                    self.batch_progress["maximum"] = total
+                    self.batch_progress["value"] = i
+                    self.batch_status.config(text=f"{i + 1} of {total}")
+                    self._log_batch(f"[{i + 1}/{total}] {name}")
+                elif kind == "batch_done":
+                    self.batch_button.config(state=NORMAL)
+                    self.batch_progress["value"] = self.batch_progress["maximum"]
+                    self.batch_status.config(text="Finished.")
+                    self._log_batch(payload.summary())
+                elif kind == "batch_error":
+                    self.batch_button.config(state=NORMAL)
+                    self.batch_status.config(text="")
+                    messagebox.showerror("Batch", str(payload))
                 elif kind == "cal_error":
                     self.cal_status.config(text="")
                     messagebox.showerror("Calibrate", str(payload))
@@ -449,6 +504,114 @@ class App:
         )
         messagebox.showinfo("Targets", f"Wrote {tif}\nand {side}.{note}")
 
+
+    # ------------------------------------------------------------------ Batch tab
+
+    def _build_batch_tab(self) -> None:
+        tab = self.batch_tab
+        grid = ttk.Frame(tab)
+        grid.pack(fill=X)
+
+        ttk.Label(grid, text="Folder of positives").grid(row=0, column=0, sticky=W, pady=3)
+        self.batch_src_var = StringVar()
+        ttk.Entry(grid, textvariable=self.batch_src_var, width=52).grid(row=0, column=1, sticky=W + E)
+        ttk.Button(grid, text="…", width=3, command=lambda: self._pick_dir(self.batch_src_var)).grid(
+            row=0, column=2, padx=3
+        )
+
+        ttk.Label(grid, text="Output folder").grid(row=1, column=0, sticky=W, pady=3)
+        self.batch_out_var = StringVar(value="out")
+        ttk.Entry(grid, textvariable=self.batch_out_var, width=52).grid(row=1, column=1, sticky=W + E)
+        ttk.Button(grid, text="…", width=3, command=lambda: self._pick_dir(self.batch_out_var)).grid(
+            row=1, column=2, padx=3
+        )
+
+        ttk.Label(grid, text="Profile").grid(row=2, column=0, sticky=W, pady=3)
+        self.batch_profile_var = StringVar()
+        self.batch_profile_box = ttk.Combobox(
+            grid, textvariable=self.batch_profile_var, state="readonly", width=32
+        )
+        self.batch_profile_box.grid(row=2, column=1, sticky=W)
+
+        ttk.Label(grid, text="Print size (mm)").grid(row=3, column=0, sticky=W, pady=3)
+        size = ttk.Frame(grid)
+        size.grid(row=3, column=1, sticky=W)
+        self.batch_w_var, self.batch_h_var = StringVar(value="240"), StringVar(value="180")
+        ttk.Entry(size, textvariable=self.batch_w_var, width=7).pack(side=LEFT)
+        ttk.Label(size, text=" × ").pack(side=LEFT)
+        ttk.Entry(size, textvariable=self.batch_h_var, width=7).pack(side=LEFT)
+        ttk.Label(size, text="  ppi ").pack(side=LEFT)
+        self.batch_ppi_var = StringVar(value=str(DEFAULT_OUTPUT_PPI))
+        ttk.Entry(size, textvariable=self.batch_ppi_var, width=6).pack(side=LEFT)
+
+        controls = ttk.Frame(tab)
+        controls.pack(fill=X, pady=theme.GAP)
+        self.batch_button = ttk.Button(controls, text="Process folder", command=self._run_batch)
+        self.batch_button.pack(side=LEFT)
+        self.batch_progress = ttk.Progressbar(controls, mode="determinate", length=340)
+        self.batch_progress.pack(side=LEFT, padx=theme.WIDE_GAP)
+        self.batch_status = ttk.Label(controls, text="", foreground=theme.OK)
+        self.batch_status.pack(side=LEFT)
+
+        self.batch_log = ScrolledText(tab, height=18, state=DISABLED, font=theme.MONO)
+        self.batch_log.pack(fill=BOTH, expand=True)
+
+    def _pick_dir(self, var: StringVar) -> None:
+        path = filedialog.askdirectory(title="Choose folder")
+        if path:
+            var.set(path)
+
+    def _log_batch(self, text: str) -> None:
+        self.batch_log.config(state=NORMAL)
+        self.batch_log.insert(END, text + "\n")
+        self.batch_log.see(END)
+        self.batch_log.config(state=DISABLED)
+
+    def _run_batch(self) -> None:
+        source = self.batch_src_var.get().strip()
+        output = self.batch_out_var.get().strip()
+        profile = self.profiles.get(self.batch_profile_var.get())
+        if not source or not output or profile is None:
+            messagebox.showinfo("Batch", "Choose a source folder, an output folder and a profile.")
+            return
+        if not profile.is_ready_to_print:
+            messagebox.showerror(
+                "Batch",
+                f"Profile {profile.name!r} has no blocker colour yet — calibrate it first.",
+            )
+            return
+        try:
+            width, height = float(self.batch_w_var.get()), float(self.batch_h_var.get())
+            ppi = float(self.batch_ppi_var.get())
+        except ValueError as e:
+            messagebox.showerror("Batch", f"Check the numeric fields: {e}")
+            return
+
+        self.batch_button.config(state=DISABLED)
+        self.batch_progress["value"] = 0
+        self.batch_status.config(text="Working…")
+        self._log_batch(f"--- {profile.name} → {output}")
+        if profile.provisional:
+            self._log_batch("    note: profile is provisional — tones are a starting point")
+
+        def work() -> None:
+            def progress(i: int, total: int, path: Path) -> None:
+                self.queue.put(("batch_progress", (i, total, path.name)))
+
+            try:
+                result = batch_negatives(
+                    source,
+                    profile,
+                    PrintSize(width, height),
+                    output,
+                    progress=progress,
+                    output_ppi=ppi,
+                )
+                self.queue.put(("batch_done", result))
+            except Exception as e:  # noqa: BLE001
+                self.queue.put(("batch_error", str(e)))
+
+        threading.Thread(target=work, daemon=True).start()
 
     # ------------------------------------------------------------------ Calibrate tab
 

@@ -16,13 +16,14 @@ from cyanoneg.analyze import (
     AnalysisError,
     analyze_grid,
     analyze_wedge,
+    analyze_zone_grid,
     apply_homography,
     detect_fiducials,
     homography,
     lightness,
 )
 from cyanoneg.imageio import Image, save_tiff
-from cyanoneg.targets import blocker_grid, step_wedge
+from cyanoneg.targets import blocker_grid, step_wedge, zone_blocker_grid
 from simulate import _lstar_to_y, render_print, scan_of
 
 
@@ -143,8 +144,6 @@ class TestWedgeAnalysis:
 
     def test_low_dr_print_warns(self, wedge, tmp_path):
         """A weak print (short tonal range) must warn, not silently calibrate."""
-        import simulate
-
         # A feeble print: compressed toward mid-grey at both ends.
         printed = render_print(wedge, lambda v: 0.25 + process_response(v) * 0.5)
         sidecar = tmp_path / "sc.json"
@@ -201,3 +200,84 @@ class TestGridAnalysis:
         assert lstars == sorted(lstars, reverse=True)
         refs = {r["ref"] for r in result.references}
         assert refs == {"clear", "black"}
+
+
+# --------------------------------------------------------------------------- zone grid
+
+
+def _drifting_hue(n):
+    """A process whose best blocking hue moves with density: 90° at the top, 30° at max."""
+    return 90 - 60 * n
+
+
+def _zone_cell_response(cell):
+    """Simulated print lightness — better blocking → whiter paper."""
+    n = cell["zone_n"]
+    gap = abs(cell["hue_deg"] - _drifting_hue(n)) / 150
+    return float(np.clip((1 - 0.75 * gap) * n**0.7, 0, 1)) * 0.95
+
+
+@pytest.fixture(scope="module")
+def zone_files(tmp_path_factory):
+    d = tmp_path_factory.mktemp("zone")
+    grid = zone_blocker_grid()
+    sidecar = d / "zone_grid.json"
+    sidecar.write_text(json.dumps(grid.sidecar))
+    scan = d / "scan.tif"
+    save_tiff(scan, scan_of(render_print(grid, cell_response=_zone_cell_response), rotate_deg=2.0))
+    return scan, sidecar, grid
+
+
+class TestZoneGridAnalysis:
+    def test_recovers_the_hue_drift(self, zone_files):
+        scan, sidecar, grid = zone_files
+        result = analyze_zone_grid(scan, sidecar)
+        assert len(result.zones) == len(grid.sidecar["zones"])
+        step = 15  # the sweep's hue resolution — recovery cannot beat it
+        for zone in result.zones:
+            assert abs(zone["hue_deg"] - _drifting_hue(zone["n"])) <= step
+
+    def test_reports_that_the_zone_model_is_justified(self, zone_files):
+        scan, sidecar, _ = zone_files
+        result = analyze_zone_grid(scan, sidecar)
+        assert result.hue_varies
+        assert "justified" in result.summary()
+
+    def test_control_points_are_usable_as_a_profile_blocker(self, zone_files):
+        """The analysis output must drop straight into a profile and validate."""
+        from cyanoneg.profiles import Profile
+
+        scan, sidecar, _ = zone_files
+        points = analyze_zone_grid(scan, sidecar).control_points()
+        profile = Profile(
+            name="zoned",
+            provisional=False,
+            blocker={"model": "zone_hue", "zones": points},
+        )
+        assert profile.validate() == []
+        assert profile.is_ready_to_print
+        assert points[0]["n"] == 0.0 and points[0]["rgb"] == [255, 255, 255]
+
+    def test_single_best_hue_reports_no_justification(self, tmp_path):
+        """If one hue wins everywhere, say so — PLAN.md only licenses the upgrade when
+        measurements justify it."""
+        grid = zone_blocker_grid()
+        sidecar = tmp_path / "z.json"
+        sidecar.write_text(json.dumps(grid.sidecar))
+        scan = tmp_path / "flat.tif"
+
+        def fixed_best(cell):
+            gap = abs(cell["hue_deg"] - 45) / 150
+            return float(np.clip((1 - 0.75 * gap) * cell["zone_n"] ** 0.7, 0, 1)) * 0.95
+
+        save_tiff(scan, scan_of(render_print(grid, cell_response=fixed_best)))
+        result = analyze_zone_grid(scan, sidecar)
+        assert not result.hue_varies
+        assert "fixed-hue" in result.summary()
+
+    def test_wrong_sidecar_rejected(self, zone_files, tmp_path):
+        scan, _, _ = zone_files
+        wedge_sidecar = tmp_path / "w.json"
+        wedge_sidecar.write_text(json.dumps(step_wedge((255, 0, 0)).sidecar))
+        with pytest.raises(AnalysisError, match="not a zone-grid sidecar"):
+            analyze_zone_grid(scan, wedge_sidecar)

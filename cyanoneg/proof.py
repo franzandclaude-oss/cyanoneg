@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .imageio import Image, from_linear, to_linear
+from .imageio import Image, from_linear
 from .lut import Lut, pchip_eval
 from .profiles import Profile
 
@@ -91,10 +91,14 @@ def soft_proof(negative: Image, profile: Profile) -> Image:
 
     # Ink coverage on the film. The minimum channel is the best single proxy the RGB data
     # offers: clear film is white in every channel, while any blocker hue drives at least
-    # one channel down. Ink is what stops UV, and equals the corrected positive level, so
-    # it indexes the measured response directly.
-    linear = to_linear(print_view, negative.space)
-    ink = np.clip(1.0 - linear.min(axis=-1), 0.0, 1.0)
+    # one channel down. Ink equals the corrected positive level, which is what indexes the
+    # measured response.
+    #
+    # This stays in the **encoded** working space on purpose. The response was measured
+    # against wedge patch values, which are encoded code values, so converting to linear
+    # light here would index the curve in the wrong space — the exact class of silent
+    # error the explicit working_space parameter exists to prevent.
+    ink = np.clip(1.0 - print_view.min(axis=-1), 0.0, 1.0)
 
     lightness = response.apply(ink.astype(np.float32))
 
