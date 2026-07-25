@@ -1,0 +1,19 @@
+# Environment
+.venv/
+
+# Claude Code local machine state
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Generated targets: the TIFFs are large and reproducible from the sidecar,
+# so the sidecar JSON (seed + geometry + patch values) is what gets tracked.
+targets/*.tif
+targets/*.tiff
+
+# Processed negatives
+out/
