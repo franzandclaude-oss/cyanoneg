@@ -51,6 +51,48 @@ def _font(px: int) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
         return ImageFont.load_default()
 
 
+def apply_frame(
+    canvas: np.ndarray,
+    border_px: int,
+    border_rgb: tuple[float, float, float],
+) -> tuple[np.ndarray, dict]:
+    """Wrap ``canvas`` in a dense border with clear-film corner fiducials.
+
+    The border prints light (its colour blocks UV) and absorbs edge-etch; the fiducials
+    are clear film, printing as the darkest marks on the sheet, which is what
+    ``analyze.py`` keys its detection on. Three are solid; the top-left one is hollow,
+    breaking every rotation/mirror symmetry.
+
+    Returns the framed canvas and the fiducial geometry (coordinates on the framed
+    canvas, print orientation).
+    """
+    h, w = canvas.shape[:2]
+    framed = np.empty((h + 2 * border_px, w + 2 * border_px, 3), dtype=np.float32)
+    framed[:, :] = np.asarray(border_rgb, dtype=np.float32)
+    framed[border_px : border_px + h, border_px : border_px + w] = canvas
+
+    fh, fw = framed.shape[:2]
+    fid = max(8, border_px // 2)
+    inset = (border_px - fid) // 2
+    positions = {
+        "top_left": (inset, inset),
+        "top_right": (inset, fw - inset - fid),
+        "bottom_left": (fh - inset - fid, inset),
+        "bottom_right": (fh - inset - fid, fw - inset - fid),
+    }
+    for name, (y, x) in positions.items():
+        framed[y : y + fid, x : x + fid] = 1.0  # clear film
+        if name == "top_left":  # hollow: refill the centre with border colour
+            q = fid // 3
+            framed[y + q : y + fid - q, x + q : x + fid - q] = np.asarray(border_rgb, dtype=np.float32)
+
+    fiducials = {
+        name: {"y_px": int(y), "x_px": int(x), "size_px": fid, "hollow": name == "top_left"}
+        for name, (y, x) in positions.items()
+    }
+    return framed, fiducials
+
+
 @dataclass
 class Target:
     """A generated target: film image (RGB float, film orientation) + sidecar dict."""
@@ -151,7 +193,8 @@ def blocker_grid(
     hues: tuple[float, ...] = GRID_HUES,
     saturations: tuple[float, ...] = GRID_SATURATIONS,
     cell_mm: float = 9.0,
-    margin_mm: float = 8.0,
+    margin_mm: float = 4.0,
+    border_mm: float = 8.0,
 ) -> Target:
     """Hue × saturation sweep at full coverage, for finding the best UV blocker.
 
@@ -162,8 +205,12 @@ def blocker_grid(
     Includes two references: CLEAR (film base — prints max black) and BLACK (RGB 0,0,0 —
     tests whether composite black outperforms any single hue, answered empirically rather
     than assumed).
+
+    Framed like the wedge — composite-black border with clear corner fiducials — so
+    ``analyze.py`` reads both scans through one detection path.
     """
     cell, margin = _mm(cell_mm), _mm(margin_mm)
+    border = _mm(border_mm)
     cols, rows = len(hues), len(saturations)
     label = _mm(8)
     w = margin * 2 + label + cols * cell + cell  # + one reference column
@@ -213,10 +260,18 @@ def blocker_grid(
         draw.text((margin, margin + label + r * cell + cell // 3), f"{sat:g}", fill=grey, font=font)
     canvas = np.asarray(pil, dtype=np.float32) / 255.0
 
+    canvas, fiducials = apply_frame(canvas, border, (0.0, 0.0, 0.0))
+    for item in cells + refs:
+        item["x_px"] += border
+        item["y_px"] += border
+
     sidecar = {
         "hues_deg": list(hues),
         "saturations": list(saturations),
         "cell_mm": cell_mm,
+        "border_mm": border_mm,
+        "border_rgb": [0, 0, 0],
+        "fiducials": fiducials,
         "cells": cells,
         "references": refs,
         "usage": "expose at SPE; best blocker = cell closest to paper-white; "
@@ -256,19 +311,17 @@ def step_wedge(
         raise ValueError(f"patch count {count} does not fill a {cols}-wide grid")
 
     patch, border = _mm(patch_mm), _mm(border_mm)
-    w = border * 2 + cols * patch
-    h = border * 2 + rows * patch
 
     rng = np.random.default_rng(seed)
     values = np.repeat(np.arange(256), redundancy)
     rng.shuffle(values)
 
-    # Mono negative canvas: border at full density.
-    n = np.ones((h, w), dtype=np.float32)
+    # Mono negative patch area; the dense border comes from apply_frame.
+    n = np.empty((rows * patch, cols * patch), dtype=np.float32)
     cells = []
     for i, value in enumerate(values):
         r, c = divmod(i, cols)
-        y, x = border + r * patch, border + c * patch
+        y, x = r * patch, c * patch
         # Patch value is the *positive* input level; the negative is its inversion.
         n[y : y + patch, x : x + patch] = 1.0 - value / 255.0
         cells.append(
@@ -277,29 +330,15 @@ def step_wedge(
                 "row": int(r),
                 "col": int(c),
                 "value": int(value),
-                "x_px": int(x),
-                "y_px": int(y),
+                "x_px": int(x + border),
+                "y_px": int(y + border),
                 "w_px": patch,
                 "h_px": patch,
             }
         )
 
-    # Fiducials: clear squares inset in the border, hollow one at top-left.
-    fid = max(8, border // 2)
-    inset = (border - fid) // 2
-    positions = {
-        "top_left": (inset, inset),
-        "top_right": (inset, w - inset - fid),
-        "bottom_left": (h - inset - fid, inset),
-        "bottom_right": (h - inset - fid, w - inset - fid),
-    }
-    for name, (y, x) in positions.items():
-        n[y : y + fid, x : x + fid] = 0.0
-        if name == "top_left":  # hollow: refill the centre
-            q = fid // 3
-            n[y + q : y + fid - q, x + q : x + fid - q] = 1.0
-
-    canvas = apply_blocker(n, blocker_rgb, saturation)
+    full_blocker = apply_blocker(np.ones((1, 1), dtype=np.float32), blocker_rgb, saturation)[0, 0]
+    canvas, fiducials = apply_frame(apply_blocker(n, blocker_rgb, saturation), border, tuple(full_blocker))
 
     sidecar = {
         "seed": seed,
@@ -310,10 +349,7 @@ def step_wedge(
         "border_mm": border_mm,
         "blocker_rgb": list(blocker_rgb),
         "saturation": saturation,
-        "fiducials": {
-            name: {"y_px": int(y), "x_px": int(x), "size_px": fid, "hollow": name == "top_left"}
-            for name, (y, x) in positions.items()
-        },
+        "fiducials": fiducials,
         "cells": cells,
         "usage": "print through linear.json only; scan the finished cyanotype print for analyze.py",
     }
