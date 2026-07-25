@@ -511,6 +511,79 @@ def analyze_grid(scan_path: str | Path, sidecar_path: str | Path, *, space=None)
     )
 
 
+# --------------------------------------------------------------------------- zone grid
+
+
+@dataclass
+class ZoneAnalysis:
+    """Best blocker hue at each density zone, ready to become zone control points."""
+
+    zones: list[dict]  # [{"n": ..., "hue_deg": ..., "rgb": [...], "lstar": ...}, ...]
+    hue_varies: bool
+    warnings: list[str]
+
+    def control_points(self) -> list[dict]:
+        """Zone control points for a ``zone_hue`` profile blocker."""
+        points = [{"n": 0.0, "rgb": [255, 255, 255]}]
+        points += [{"n": z["n"], "rgb": list(z["rgb"])} for z in self.zones]
+        return points
+
+    def summary(self) -> str:
+        lines = ["best blocking hue per density zone:"]
+        lines += [
+            f"  n {z['n']:.2f}   hue {z['hue_deg']:>4g}°   L* {z['lstar']:.1f}" for z in self.zones
+        ]
+        lines.append(
+            "hue varies across the scale — the zone model is justified"
+            if self.hue_varies
+            else "one hue wins at every zone — stay with the simpler fixed-hue model"
+        )
+        lines += [f"WARNING: {w}" for w in self.warnings]
+        return "\n".join(lines)
+
+
+def analyze_zone_grid(scan_path: str | Path, sidecar_path: str | Path, *, space=None) -> ZoneAnalysis:
+    """Find the best-blocking hue at each density zone.
+
+    Reports whether the winning hue actually changes across the scale. If it does not,
+    the zone model buys nothing over fixed-hue and the analysis says so — PLAN.md only
+    licenses the upgrade "if measurements justify it".
+    """
+    sidecar = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
+    if "zones" not in sidecar or "hues_deg" not in sidecar:
+        raise AnalysisError(f"{sidecar_path} is not a zone-grid sidecar")
+    scan = load_image(scan_path, space=space)
+    frame = detect_fiducials(scan, sidecar)
+    samples = sample_cells(scan, sidecar, frame)
+
+    by_zone: dict[float, list[dict]] = {}
+    for s in samples:
+        by_zone.setdefault(s["zone_n"], []).append(s)
+
+    zones = []
+    for n in sorted(by_zone):
+        best = max(by_zone[n], key=lambda s: s["lstar"])
+        zones.append(
+            {
+                "n": float(n),
+                "hue_deg": best["hue_deg"],
+                "rgb": best["rgb"],
+                "lstar": round(best["lstar"], 2),
+            }
+        )
+
+    hues = {z["hue_deg"] for z in zones}
+    warnings: list[str] = []
+    if len(zones) < 2:
+        warnings.append("fewer than two density zones read — cannot judge hue variation")
+    lstars = [z["lstar"] for z in zones]
+    if max(lstars) - min(lstars) < 2.0:
+        warnings.append(
+            "density zones barely differ in blocking — check exposure; the wedge may be more useful here"
+        )
+    return ZoneAnalysis(zones=zones, hue_varies=len(hues) > 1, warnings=warnings)
+
+
 # --------------------------------------------------------------------------- CLI
 
 
@@ -529,8 +602,15 @@ def main(argv: list[str] | None = None) -> int:
     grid.add_argument("sidecar", type=Path)
     grid.add_argument("--space", default=None)
 
+    zone = sub.add_parser("zone-grid", help="find the best blocker hue per density zone")
+    zone.add_argument("scan", type=Path)
+    zone.add_argument("sidecar", type=Path)
+    zone.add_argument("--space", default=None)
+
     args = parser.parse_args(argv)
-    if args.command == "wedge":
+    if args.command == "zone-grid":
+        print(analyze_zone_grid(args.scan, args.sidecar, space=args.space).summary())
+    elif args.command == "wedge":
         result = analyze_wedge(args.scan, args.sidecar, space=args.space)
         print(result.summary())
         if args.export:

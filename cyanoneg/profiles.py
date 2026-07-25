@@ -65,21 +65,42 @@ class Profile:
             problems.append("provisional must be true or false")
 
         model = self.blocker.get("model")
-        if model != "fixed_hue":
-            problems.append(f"unknown blocker model {model!r} (phase 1 supports 'fixed_hue')")
-        rgb = self.blocker.get("rgb")
-        if rgb is not None:
-            if (
-                not isinstance(rgb, (list, tuple))
-                or len(rgb) != 3
-                or not all(isinstance(v, (int, float)) and 0 <= v <= 255 for v in rgb)
-            ):
+        if model not in ("fixed_hue", "zone_hue"):
+            problems.append(f"unknown blocker model {model!r} (expected 'fixed_hue' or 'zone_hue')")
+
+        def _bad_rgb(value) -> bool:
+            return (
+                not isinstance(value, (list, tuple))
+                or len(value) != 3
+                or not all(isinstance(v, (int, float)) and 0 <= v <= 255 for v in value)
+            )
+
+        if model == "zone_hue":
+            zones = self.blocker.get("zones")
+            if not isinstance(zones, list) or not zones:
+                problems.append("a zone_hue blocker needs a non-empty 'zones' list")
+            else:
+                ns = []
+                for z in zones:
+                    if not isinstance(z, dict) or "n" not in z or "rgb" not in z:
+                        problems.append(f"zone entry must have 'n' and 'rgb', got {z!r}")
+                        continue
+                    if not isinstance(z["n"], (int, float)) or not 0.0 <= z["n"] <= 1.0:
+                        problems.append(f"zone n must be within [0, 1], got {z['n']!r}")
+                    if _bad_rgb(z["rgb"]):
+                        problems.append(f"zone rgb must be three 0-255 values, got {z['rgb']!r}")
+                    ns.append(z.get("n"))
+                if len(set(ns)) != len(ns):
+                    problems.append("zone control points must have distinct n values")
+        else:
+            rgb = self.blocker.get("rgb")
+            if rgb is not None and _bad_rgb(rgb):
                 problems.append(f"blocker rgb must be three 0-255 values, got {rgb!r}")
-        sat = self.blocker.get("saturation")
-        if sat is not None and not (isinstance(sat, (int, float)) and 0.0 <= sat <= 1.0):
-            problems.append(f"blocker saturation must be within [0, 1], got {sat!r}")
-        if not self.provisional and (rgb is None or sat is None):
-            problems.append("a non-provisional profile must have measured blocker rgb and saturation")
+            sat = self.blocker.get("saturation")
+            if sat is not None and not (isinstance(sat, (int, float)) and 0.0 <= sat <= 1.0):
+                problems.append(f"blocker saturation must be within [0, 1], got {sat!r}")
+            if not self.provisional and (rgb is None or sat is None):
+                problems.append("a non-provisional profile must have measured blocker rgb and saturation")
 
         if len(self.lut.values) < 2:
             problems.append("lut must hold at least two values")
@@ -92,6 +113,8 @@ class Profile:
     @property
     def is_ready_to_print(self) -> bool:
         """True when the profile specifies everything a negative needs (even provisionally)."""
+        if self.blocker.get("model") == "zone_hue":
+            return bool(self.blocker.get("zones"))
         return self.blocker.get("rgb") is not None and self.blocker.get("saturation") is not None
 
     # ------------------------------------------------------------------ JSON round-trip

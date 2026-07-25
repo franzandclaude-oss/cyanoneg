@@ -24,7 +24,7 @@ import numpy as np
 from PIL import Image as PILImage
 
 from . import imageio as cio
-from .blocker import apply_blocker
+from .blocker import apply_blocker, apply_zone_blocker
 from .imageio import Image
 from .mono import DEFAULT_WEIGHTS, to_mono
 from .profiles import Profile
@@ -86,6 +86,15 @@ def step_invert(image: Image) -> Image:
 
 
 def step_blocker(image: Image, profile: Profile) -> Image:
+    if profile.blocker.get("model") == "zone_hue":
+        zones = profile.blocker.get("zones")
+        if not zones:
+            raise ValueError(
+                f"profile {profile.name!r} declares a zone blocker but carries no zones — "
+                "print and measure the zone blocker grid first"
+            )
+        return image.replace(apply_zone_blocker(image.data, zones))
+
     rgb = profile.blocker.get("rgb")
     sat = profile.blocker.get("saturation")
     if rgb is None or sat is None:

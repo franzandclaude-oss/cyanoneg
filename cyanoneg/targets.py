@@ -280,6 +280,85 @@ def blocker_grid(
     return _finish("blocker_grid", canvas, sidecar)
 
 
+# --------------------------------------------------------------------------- zone grid
+
+#: Density zones sampled by the zone grid. Skips n = 0 (clear film blocks nothing) and
+#: concentrates where cyanotype actually separates tone.
+ZONE_LEVELS = (0.25, 0.45, 0.65, 0.85, 1.0)
+
+
+def zone_blocker_grid(
+    hues: tuple[float, ...] = GRID_HUES,
+    zones: tuple[float, ...] = ZONE_LEVELS,
+    cell_mm: float = 9.0,
+    margin_mm: float = 4.0,
+    border_mm: float = 8.0,
+) -> Target:
+    """Hue sweep repeated at several densities, for the zone-varying blocker.
+
+    Each row is one density zone; each column one hue. The ink laid down at n = 0.25 is a
+    different mixture from the same hue at n = 1.0, and it need not block UV equally well —
+    this target measures whether that is true for *this* printer and film, rather than
+    assuming the EDN result transfers.
+
+    Read with :func:`cyanoneg.analyze.analyze_zone_grid`, which returns the best hue per
+    zone; those become the zone control points.
+    """
+    cell, margin, border = _mm(cell_mm), _mm(margin_mm), _mm(border_mm)
+    label = _mm(8)
+    cols, rows = len(hues), len(zones)
+    w = margin * 2 + label + cols * cell
+    h = margin * 2 + label + rows * cell
+    canvas = np.ones((h, w, 3), dtype=np.float32)
+
+    cells = []
+    for r, n in enumerate(zones):
+        for c, hue in enumerate(hues):
+            rgb = hue_to_rgb(hue, 1.0, 1.0)
+            block = apply_blocker(np.full((cell, cell), float(n), dtype=np.float32), rgb, 1.0)
+            y, x = margin + label + r * cell, margin + label + c * cell
+            canvas[y : y + cell, x : x + cell] = block
+            cells.append(
+                {
+                    "row": r,
+                    "col": c,
+                    "hue_deg": hue,
+                    "zone_n": float(n),
+                    "rgb": [int(round(float(v) * 255)) for v in block[0, 0]],
+                    "x_px": x,
+                    "y_px": y,
+                    "w_px": cell,
+                    "h_px": cell,
+                }
+            )
+
+    pil = PILImage.fromarray((canvas * 255).astype(np.uint8))
+    draw = ImageDraw.Draw(pil)
+    font = _font(_mm(3))
+    grey = (60, 60, 60)
+    for c, hue in enumerate(hues):
+        draw.text((margin + label + c * cell + cell // 3, margin), f"{hue:g}", fill=grey, font=font)
+    for r, n in enumerate(zones):
+        draw.text((margin, margin + label + r * cell + cell // 3), f"{n:g}", fill=grey, font=font)
+    canvas = np.asarray(pil, dtype=np.float32) / 255.0
+
+    canvas, fiducials = apply_frame(canvas, border, (0.0, 0.0, 0.0))
+    for cell_meta in cells:
+        cell_meta["x_px"] += border
+        cell_meta["y_px"] += border
+
+    sidecar = {
+        "hues_deg": list(hues),
+        "zones": list(zones),
+        "cell_mm": cell_mm,
+        "border_mm": border_mm,
+        "fiducials": fiducials,
+        "cells": cells,
+        "usage": "expose at SPE; per density row the whitest cell names that zone's best hue",
+    }
+    return _finish("zone_grid", canvas, sidecar)
+
+
 # --------------------------------------------------------------------------- 256-step wedge
 
 
@@ -365,6 +444,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--all", action="store_true", help="generate all three targets")
     parser.add_argument("--exposure", action="store_true")
     parser.add_argument("--grid", action="store_true")
+    parser.add_argument("--zone-grid", action="store_true", help="hue sweep per density zone (phase 3)")
     parser.add_argument("--wedge", action="store_true")
     parser.add_argument(
         "--blocker",
@@ -385,10 +465,12 @@ def main(argv: list[str] | None = None) -> int:
         wanted.append(exposure_strip(blocker_rgb=rgb))
     if args.all or args.grid:
         wanted.append(blocker_grid())
+    if args.zone_grid:  # not in --all: only needed when upgrading to the zone model
+        wanted.append(zone_blocker_grid())
     if args.all or args.wedge:
         wanted.append(step_wedge(rgb, saturation=args.saturation, seed=args.seed))
     if not wanted:
-        parser.error("nothing to do: pass --all or one of --exposure/--grid/--wedge")
+        parser.error("nothing to do: pass --all or one of --exposure/--grid/--zone-grid/--wedge")
 
     for target in wanted:
         tif, side = target.save(args.out)

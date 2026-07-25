@@ -4,6 +4,9 @@ Deliberately plain tkinter — the value of this tool is in the pipeline, not th
 Processing runs on a worker thread so the window stays responsive; results and errors come
 back to the UI via ``after`` polling of a queue.
 
+Every colour, font and metric comes from :mod:`cyanoneg.gui.theme`; none are written
+inline here, so restyling the interface is a change to that one module.
+
 The Calibrate tab walks the three-step wizard from PLAN.md: exposure (record SPE) →
 blocker (read the HSB grid scan) → linearisation (read the wedge scan, save the measured
 profile and export .cube/.acv).
@@ -44,18 +47,15 @@ from ..mono import DEFAULT_WEIGHTS, channel_noise, suggest_weights
 from ..pipeline import DEFAULT_OUTPUT_PPI, PrintSize, make_negative
 from ..profiles import PROFILE_DIR, Profile, list_profiles
 from ..targets import blocker_grid, exposure_strip, step_wedge
+from . import theme
 
-PREVIEW_MAX = 420
 
 
 class App:
     def __init__(self, root: Tk) -> None:
         self.root = root
         root.title("cyanoneg — cyanotype digital negatives")
-        # Sized for the Calibrate tab, which is the widest: three step frames each with a
-        # generate button, a scan path field and an analyse button on one row.
-        root.geometry("1180x780")
-        root.minsize(1100, 720)
+        theme.apply(root)
 
         self.queue: queue.Queue = queue.Queue()
         self.profiles: dict[str, Profile] = {}
@@ -63,9 +63,9 @@ class App:
 
         notebook = ttk.Notebook(root)
         notebook.pack(fill=BOTH, expand=True)
-        self.process_tab = ttk.Frame(notebook, padding=10)
-        self.profiles_tab = ttk.Frame(notebook, padding=10)
-        self.calibrate_tab = ttk.Frame(notebook, padding=10)
+        self.process_tab = ttk.Frame(notebook, padding=theme.PAD)
+        self.profiles_tab = ttk.Frame(notebook, padding=theme.PAD)
+        self.calibrate_tab = ttk.Frame(notebook, padding=theme.PAD)
         notebook.add(self.process_tab, text="Process")
         notebook.add(self.profiles_tab, text="Profiles")
         notebook.add(self.calibrate_tab, text="Calibrate")
@@ -150,7 +150,7 @@ class App:
         self.profile_box.grid(row=r, column=1, sticky=W)
         self.profile_box.bind("<<ComboboxSelected>>", lambda _e: self._on_profile_selected())
 
-        self.profile_note = ttk.Label(grid, text="", foreground="#a06000", wraplength=340)
+        self.profile_note = ttk.Label(grid, text="", foreground=theme.WARN, wraplength=340)
         self.profile_note.grid(row=row, column=1, sticky=W)
         row += 1
 
@@ -183,7 +183,7 @@ class App:
         self.process_button = ttk.Button(left, text="Make negative", command=self._process)
         self.process_button.pack(fill=X, pady=(10, 4))
 
-        self.status = ttk.Label(left, text="", wraplength=380, foreground="#205020")
+        self.status = ttk.Label(left, text="", wraplength=380, foreground=theme.OK)
         self.status.pack(fill=X)
 
     def _pick_source(self) -> None:
@@ -295,7 +295,7 @@ class App:
     def _show_preview(self, data: np.ndarray) -> None:
         arr = (np.clip(data, 0.0, 1.0) * 255).astype(np.uint8)
         pil = PILImage.fromarray(arr)
-        pil.thumbnail((PREVIEW_MAX, PREVIEW_MAX))
+        pil.thumbnail((theme.PREVIEW_MAX, theme.PREVIEW_MAX))
         self.preview_photo = ImageTk.PhotoImage(pil)
         self.preview_label.config(image=self.preview_photo)
 
@@ -370,7 +370,7 @@ class App:
             side=LEFT, padx=4
         )
 
-        self.detail = ScrolledText(tab, width=58, state=DISABLED, font=("Consolas", 9))
+        self.detail = ScrolledText(tab, width=58, state=DISABLED, font=theme.MONO)
         self.detail.pack(side=RIGHT, fill=BOTH, expand=True)
 
     def _refresh_profile_list(self) -> None:
@@ -463,11 +463,11 @@ class App:
         self.cal_profile_var = StringVar()
         self.cal_profile_box = ttk.Combobox(top, textvariable=self.cal_profile_var, state="readonly", width=30)
         self.cal_profile_box.pack(side=LEFT, padx=6)
-        self.cal_status = ttk.Label(top, text="", foreground="#205020")
+        self.cal_status = ttk.Label(top, text="", foreground=theme.OK)
         self.cal_status.pack(side=LEFT, padx=10)
 
         # --- Step 1: exposure -------------------------------------------------
-        step1 = ttk.LabelFrame(tab, text="Step 1 — Exposure (SPE)", padding=8)
+        step1 = ttk.LabelFrame(tab, text="Step 1 — Exposure (SPE)", padding=theme.GROUP_PAD)
         step1.pack(fill=X, pady=(8, 4))
         ttk.Label(
             step1,
@@ -490,7 +490,7 @@ class App:
         ttk.Button(row1, text="Save to profile", command=self._save_exposure).pack(side=LEFT, padx=8)
 
         # --- Step 2: blocker --------------------------------------------------
-        step2 = ttk.LabelFrame(tab, text="Step 2 — Blocker (HSB grid)", padding=8)
+        step2 = ttk.LabelFrame(tab, text="Step 2 — Blocker (HSB grid)", padding=theme.GROUP_PAD)
         step2.pack(fill=X, pady=4)
         ttk.Button(step2, text="Generate grid", command=lambda: self._generate_target("grid")).grid(
             row=0, column=0, sticky=W
@@ -502,7 +502,7 @@ class App:
             row=0, column=3, padx=2
         )
         ttk.Button(step2, text="Analyse", command=self._analyse_grid).grid(row=0, column=4, padx=8)
-        self.grid_result = ttk.Label(step2, text="(no analysis yet)", justify=LEFT, font=("Consolas", 9))
+        self.grid_result = ttk.Label(step2, text="(no analysis yet)", justify=LEFT, font=theme.MONO)
         self.grid_result.grid(row=1, column=0, columnspan=5, sticky=W, pady=4)
         apply_row = ttk.Frame(step2)
         apply_row.grid(row=2, column=0, columnspan=5, sticky=W)
@@ -515,7 +515,7 @@ class App:
         ttk.Button(apply_row, text="Save blocker to profile", command=self._save_blocker).pack(side=LEFT, padx=10)
 
         # --- Step 3: linearise ------------------------------------------------
-        step3 = ttk.LabelFrame(tab, text="Step 3 — Linearisation (256-step wedge)", padding=8)
+        step3 = ttk.LabelFrame(tab, text="Step 3 — Linearisation (256-step wedge)", padding=theme.GROUP_PAD)
         step3.pack(fill=BOTH, expand=True, pady=4)
         ttk.Button(step3, text="Generate wedge", command=lambda: self._generate_target("wedge")).grid(
             row=0, column=0, sticky=W
@@ -527,11 +527,11 @@ class App:
             row=0, column=3, padx=2
         )
         ttk.Button(step3, text="Analyse", command=self._analyse_wedge).grid(row=0, column=4, padx=8)
-        self.wedge_result = ttk.Label(step3, text="(no analysis yet)", justify=LEFT, font=("Consolas", 9))
+        self.wedge_result = ttk.Label(step3, text="(no analysis yet)", justify=LEFT, font=theme.MONO)
         self.wedge_result.grid(row=1, column=0, columnspan=4, sticky="nw", pady=4)
         from tkinter import Canvas
 
-        self.curve_canvas = Canvas(step3, width=220, height=220, background="#ffffff", highlightthickness=1)
+        self.curve_canvas = Canvas(step3, width=theme.CURVE_SIZE, height=theme.CURVE_SIZE, background=theme.CANVAS_BG, highlightthickness=1)
         self.curve_canvas.grid(row=1, column=4, rowspan=2, padx=8, pady=4)
         self.save_measured_button = ttk.Button(
             step3, text="Save measured profile (+ .cube/.acv)", command=self._save_measured, state=DISABLED
@@ -645,14 +645,14 @@ class App:
         # Draw the derived correction curve.
         c = self.curve_canvas
         c.delete("all")
-        size = 220
-        c.create_line(0, size, size, 0, fill="#cccccc")  # identity reference
+        size = theme.CURVE_SIZE
+        c.create_line(0, size, size, 0, fill=theme.CURVE_REFERENCE)  # identity reference
         points = []
         for i, v in enumerate(result.lut.values):
             x = i / (len(result.lut.values) - 1) * (size - 1)
             y = (1.0 - v) * (size - 1)
             points.extend((x, y))
-        c.create_line(*points, fill="#1040a0", width=2)
+        c.create_line(*points, fill=theme.CURVE, width=2)
 
     def _save_measured(self) -> None:
         profile = self._cal_profile()
@@ -682,10 +682,6 @@ class App:
 
 def main() -> int:
     root = Tk()
-    try:
-        ttk.Style().theme_use("vista")
-    except Exception:  # noqa: BLE001 - theme is cosmetic
-        pass
     App(root)
     root.mainloop()
     return 0
