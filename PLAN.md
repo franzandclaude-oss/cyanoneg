@@ -2,16 +2,19 @@
 
 ## Current status (2026-07-25)
 
-**Phase 1 in progress.** The plan is approved and the repo is now git-initialised. This revision
-folds in direct measurements of the supplied chart and resolves two contradictions the earlier
-draft carried — see the *Resolved (2026-07-25)* notes on colour space and on starting profiles.
+**Phase 1 complete (2026-07-25).** All pipeline modules, the three target generators, the two
+starting profiles, the tkinter GUI (Process + Profiles tabs) and a 69-test suite — including the
+synthetic calibration round-trip — are implemented and passing. This revision also folds in direct
+measurements of the supplied chart and resolves two contradictions the earlier draft carried — see
+the *Resolved (2026-07-25)* notes on colour space and on starting profiles.
 
-On disk in `C:\Users\steve\Desktop\Claude\Cyanotype\`:
-- `PLAN.md` — this file
-- `EDN_RGB_256.tif` — supplied calibration chart (see below)
-- `.venv\` — Python 3.14.6 venv, dependencies installed
+Run the GUI with `.venv\Scripts\python.exe -m cyanoneg`; generate targets with
+`.venv\Scripts\python.exe -m cyanoneg.targets --all`; run tests with
+`.venv\Scripts\python.exe -m pytest`.
 
-Next step is Phase 1: package skeleton, then the pipeline modules.
+Remaining manual checks before the first calibration print: the driver check below, the Photoshop
+interop check (`.acv` in Curves, `.cube` via Color Lookup), and recording Film 1's real product
+name and batch. Next code phase is **Phase 2**: `analyze.py` and the Calibrate wizard.
 
 Address the user as **Steven** — never "Steve" (that is only the Windows username).
 
