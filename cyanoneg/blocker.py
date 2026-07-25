@@ -4,14 +4,25 @@ The ET-1810's driver offers no ink-density control, so UV density is controlled 
 what colour is printed. A greyscale negative on a 4-ink dye machine wastes the three best
 UV blockers; the negative is therefore always rendered in a blocker hue.
 
+**The polarity convention — get this wrong and prints come out inverted.**
+
+``v`` is the *negative's greyscale pixel value*, exactly as ``step_invert`` produces it
+(``v = 1 - positive``):
+
+    v = 0  black in the negative  → maximum blocker ink → UV blocked → paper stays WHITE
+    v = 1  white in the negative  → no ink, clear film  → UV passes  → paper goes DARK
+
+Since ``v = 1 - p``, a **bright** positive gives ``v = 0`` and therefore heavy ink and a
+white print — which is what a real digital negative looks like: dense where the scene was
+bright. An inkjet lays more ink for darker pixels, and this mapping is the explicit
+equivalent of that.
+
 **Fixed-hue model** (Phase 1, from PLAN.md):
 
-    blocker_eff = white + s * (blocker - white)      # saturation scales toward white
-    RGB         = white - n * (white - blocker_eff)  # n = negative value in [0, 1]
+    blocker_eff = white + s * (blocker - white)   # saturation scales toward white
+    RGB         = blocker_eff + v * (white - blocker_eff)
 
-``n = 0`` → pure white (clear film, full exposure); ``n = 1`` → the full blocker colour
-(maximum UV density). ``s`` is the Harmon-style saturation scalar: one curve, saturation
-sets the density range.
+``s`` is the Harmon-style saturation scalar: one curve, saturation sets the density range.
 
 **Zone-varying model** (Phase 3, EDN-style): one hue rarely blocks best across the whole
 scale — the ink mix that holds back UV most effectively at full density is not necessarily
@@ -50,15 +61,17 @@ def apply_blocker(
     rgb: tuple[int, int, int],
     saturation: float = 1.0,
 ) -> np.ndarray:
-    """Map a mono *negative* (0 = clear, 1 = densest) to colour-blocked RGB.
+    """Recolour a mono negative into the blocker hue.
 
-    Input must already be inverted — this is pipeline step 6, after step 5's inversion.
+    ``negative`` is the greyscale negative as produced by ``step_invert``: **0 is black
+    (maximum ink), 1 is white (clear film)** — see the module docstring. Blacks become the
+    blocker colour; whites stay clear.
     """
-    n = np.asarray(negative, dtype=np.float32)
-    if n.ndim != 2:
+    v = np.asarray(negative, dtype=np.float32)
+    if v.ndim != 2:
         raise ValueError("apply_blocker expects a 2D mono negative")
     b_eff = effective_blocker(rgb, saturation)
-    out = 1.0 - n[..., None] * (1.0 - b_eff[None, None, :])
+    out = b_eff[None, None, :] + v[..., None] * (1.0 - b_eff[None, None, :])
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
@@ -106,12 +119,16 @@ def zone_curves(zones: list[dict], size: int = 256) -> np.ndarray:
 
 
 def apply_zone_blocker(negative: np.ndarray, zones: list[dict], size: int = 256) -> np.ndarray:
-    """Map a mono negative through zone control points to colour-blocked RGB."""
-    n = np.asarray(negative, dtype=np.float32)
-    if n.ndim != 2:
+    """Recolour a mono negative through zone control points.
+
+    ``negative`` uses the same convention as :func:`apply_blocker` (0 = black = maximum
+    ink). Zone control points are keyed by *ink density* n, so the lookup is by ``1 - v``.
+    """
+    v = np.asarray(negative, dtype=np.float32)
+    if v.ndim != 2:
         raise ValueError("apply_zone_blocker expects a 2D mono negative")
     table = zone_curves(zones, size)
-    idx = np.clip(n, 0.0, 1.0) * (size - 1)
+    idx = np.clip(1.0 - v, 0.0, 1.0) * (size - 1)
     lo = np.floor(idx).astype(np.int32)
     hi = np.minimum(lo + 1, size - 1)
     frac = (idx - lo)[..., None]

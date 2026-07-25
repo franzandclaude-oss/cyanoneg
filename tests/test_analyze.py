@@ -27,7 +27,10 @@ from simulate import _lstar_to_y, render_print, scan_of
 
 
 def process_response(x):
-    """The same nasty S-curve used in the Phase 1 synthetic test."""
+    """Input level → normalised print lightness. The nasty S-curve from Phase 1.
+
+    Increasing: input 0 is clear film (max black), input 1 lays maximum ink (paper white).
+    """
     raw = 0.5 * (1 + np.tanh(3.5 * (np.asarray(x) - 0.45)))
     lo = 0.5 * (1 + np.tanh(3.5 * (0 - 0.45)))
     hi = 0.5 * (1 + np.tanh(3.5 * (1 - 0.45)))
@@ -125,7 +128,7 @@ class TestWedgeAnalysis:
         printed[
             victim["y_px"] : victim["y_px"] + victim["h_px"],
             victim["x_px"] : victim["x_px"] + victim["w_px"],
-        ] = _lstar_to_y(np.array([30.0]))[0]  # way too dark for its level
+        ] = _lstar_to_y(np.array([88.0]))[0]  # way too light for its level
 
         sidecar = tmp_path / "sc.json"
         sidecar.write_text(json.dumps(wedge.sidecar))
@@ -142,7 +145,8 @@ class TestWedgeAnalysis:
         """A weak print (short tonal range) must warn, not silently calibrate."""
         import simulate
 
-        printed = render_print(wedge, lambda v: process_response(v) * 0.55)  # feeble max black
+        # A feeble print: compressed toward mid-grey at both ends.
+        printed = render_print(wedge, lambda v: 0.25 + process_response(v) * 0.5)
         sidecar = tmp_path / "sc.json"
         sidecar.write_text(json.dumps(wedge.sidecar))
         scan = tmp_path / "weak.tif"
@@ -163,10 +167,12 @@ BEST_HUE = 45
 
 
 def _grid_cell_response(cell):
+    """Simulated print lightness: better UV blocking → whiter paper → higher value."""
     if "ref" in cell:
-        return 1.0 if cell["ref"] == "clear" else 0.35
+        return 0.0 if cell["ref"] == "clear" else 0.65  # clear film prints max black
     gap = abs(cell["hue_deg"] - BEST_HUE) / 150
-    return float(np.clip(1 - (1 - 0.8 * gap) * cell["saturation"] ** 1.5, 0, 1)) * 0.9
+    blocking = (1 - 0.8 * gap) * cell["saturation"] ** 1.5
+    return float(np.clip(blocking, 0, 1)) * 0.95
 
 
 @pytest.fixture(scope="module")

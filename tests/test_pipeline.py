@@ -66,16 +66,17 @@ class TestStepOrder:
     def test_curve_applies_to_positive_not_negative(self):
         """Functional proof of curve-before-invert, independent of call tracing.
 
-        With LUT(x) = x², correct order gives 1 - v²; the wrong order would give (1 - v)².
-        Checked away from the resize so interpolation cannot blur the distinction.
+        With LUT(x) = x², the correct order gives a negative value of 1 - v²; applying the
+        curve after inversion would give (1 - v)². Checked on a flat patch so the resize
+        cannot blur the distinction.
         """
         value = 0.6
         flat = Image(np.full((40, 40, 3), value, dtype=np.float32), "srgb", ppi=300)
         profile = _profile(lut=Lut(np.linspace(0, 1, 256) ** 2))
         negative = make_negative(flat, profile, PrintSize(10, 10))
-        # Red-blocker green channel encodes 1 - n... n = 1 - lut(v), so green = lut(v).
+        # Red blocker: out = (1, v, v), so the green channel is the negative value itself.
         green = float(np.median(negative.data[..., 1]))
-        assert green == pytest.approx(value**2, abs=0.01)
+        assert green == pytest.approx(1 - value**2, abs=0.01)
         assert abs(green - (1 - value) ** 2) > 0.15  # rules out the wrong order
 
 
@@ -85,9 +86,10 @@ class TestGeometryAndOutput:
         h, w, _ = negative.data.shape
         assert w <= round(100 / 25.4 * 360) + 1
         assert h <= round(50 / 25.4 * 360) + 1
-        # Source ramp is dark-left; negative of it is dense-left; mirrored → dense-right.
+        # Source ramp is dark-left. Dark must print dark, so the left needs UV through it —
+        # clear film, i.e. high negative value. The mirror puts that clear end on the right.
         green = negative.data[..., 1]
-        assert green[:, 0].mean() > green[:, -1].mean()
+        assert green[:, -1].mean() > green[:, 0].mean()
 
     def test_output_is_coloured_not_grey(self, ramp):
         negative = make_negative(ramp, _profile(), PrintSize(50, 25))
@@ -117,5 +119,5 @@ class TestGeometryAndOutput:
         negative = make_negative(flat, profile, PrintSize(10, 10))
         from cyanoneg.imageio import convert_space
 
-        expected = float(convert_space(np.array([value], dtype=np.float32), "srgb", "gamma22")[0]) ** 2
-        assert float(np.median(negative.data[..., 1])) == pytest.approx(expected, abs=0.01)
+        corrected = float(convert_space(np.array([value], dtype=np.float32), "srgb", "gamma22")[0]) ** 2
+        assert float(np.median(negative.data[..., 1])) == pytest.approx(1 - corrected, abs=0.01)

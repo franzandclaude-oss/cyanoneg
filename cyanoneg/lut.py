@@ -189,8 +189,9 @@ def derive_correction(
 
     ``measured_in`` are the values sent to the printer (the patch values of the step
     tablet, in the working space). ``measured_out`` are the corresponding normalised print
-    responses — 0 for the response at input 0, 1 for the response at input 1, as produced
-    by normalising scan readings against the max-black and paper-white references.
+    lightnesses — 0 at max black, 1 at paper white — from normalising scan readings against
+    those two references. Both axes run dark → light, so the correction comes out
+    monotonically increasing.
 
     The process maps in → out; the correction is the *inverse*: for each desired output
     level we look up which input produces it. Duplicate readings (flat shadow/highlight

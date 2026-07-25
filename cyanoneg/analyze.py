@@ -369,8 +369,11 @@ def analyze_wedge(scan_path: str | Path, sidecar_path: str | Path, *, space=None
     if levels != list(range(sidecar["levels"])):
         raise AnalysisError("sidecar does not cover every level exactly — file mismatch?")
 
-    paper_lstar = float(np.mean([s["lstar"] for s in by_value[0]]))
-    black_lstar = float(np.mean([s["lstar"] for s in by_value[sidecar['levels'] - 1]]))
+    # Polarity (see blocker.py): the top patch value is black in the negative, so it lays
+    # maximum ink, blocks UV and leaves paper white. Value 0 is clear film → max black.
+    top = sidecar["levels"] - 1
+    paper_lstar = float(np.mean([s["lstar"] for s in by_value[top]]))
+    black_lstar = float(np.mean([s["lstar"] for s in by_value[0]]))
     if paper_lstar - black_lstar < 5.0:
         raise AnalysisError(
             "paper-white and max-black references are nearly identical — "
@@ -378,7 +381,8 @@ def analyze_wedge(scan_path: str | Path, sidecar_path: str | Path, *, space=None
         )
 
     def normalise(lstar: float) -> float:
-        return (paper_lstar - lstar) / (paper_lstar - black_lstar)
+        """Normalised print lightness: 0 at max black, 1 at paper white."""
+        return (lstar - black_lstar) / (paper_lstar - black_lstar)
 
     warnings: list[str] = []
     spikes: list[dict] = []
@@ -397,8 +401,8 @@ def analyze_wedge(scan_path: str | Path, sidecar_path: str | Path, *, space=None
         measured_out[i] = float(np.mean(copies))
 
     # Density range from the linear-luminance references.
-    y_paper = float(np.mean([s["y_linear"] for s in by_value[0]]))
-    y_black = float(np.mean([s["y_linear"] for s in by_value[sidecar['levels'] - 1]]))
+    y_paper = float(np.mean([s["y_linear"] for s in by_value[top]]))
+    y_black = float(np.mean([s["y_linear"] for s in by_value[0]]))
     density_range = float(np.log10(max(y_paper, 1e-6) / max(y_black, 1e-6)))
     if density_range < DR_WINDOW[0]:
         warnings.append(

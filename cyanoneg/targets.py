@@ -144,15 +144,15 @@ def exposure_strip(
     base, no wasted exposure.
     """
     w, h = _mm(zone_mm) * zones, _mm(height_mm)
-    # Build as a mono negative: 0 = clear film, 1 = full blocker.
-    n = np.zeros((h, w), dtype=np.float32)
+    # Mono negative, blocker convention: 1 = white = clear film, 0 = black = full blocker.
+    n = np.ones((h, w), dtype=np.float32)
     half = h // 2
-    n[half:, :] = 1.0  # bottom half: full blocker reference
+    n[half:, :] = 0.0  # bottom half: full blocker reference
 
     divider = max(2, _mm(0.5))
     for z in range(1, zones):
         x = z * _mm(zone_mm)
-        n[:, x - divider // 2 : x + divider // 2] = 1.0
+        n[:, x - divider // 2 : x + divider // 2] = 0.0
 
     rgb = apply_blocker(n, blocker_rgb, 1.0)
 
@@ -221,7 +221,8 @@ def blocker_grid(
     for r, sat in enumerate(saturations):
         for c, hue in enumerate(hues):
             rgb = hue_to_rgb(hue, 1.0, 1.0)
-            block = apply_blocker(np.ones((cell, cell), dtype=np.float32), rgb, sat)
+            # zeros = black in the negative = maximum ink, i.e. full coverage.
+            block = apply_blocker(np.zeros((cell, cell), dtype=np.float32), rgb, sat)
             y, x = margin + label + r * cell, margin + label + c * cell
             canvas[y : y + cell, x : x + cell] = block
             cells.append(
@@ -315,7 +316,8 @@ def zone_blocker_grid(
     for r, n in enumerate(zones):
         for c, hue in enumerate(hues):
             rgb = hue_to_rgb(hue, 1.0, 1.0)
-            block = apply_blocker(np.full((cell, cell), float(n), dtype=np.float32), rgb, 1.0)
+            # n is ink density; the blocker takes negative value, so pass 1 - n.
+            block = apply_blocker(np.full((cell, cell), 1.0 - float(n), dtype=np.float32), rgb, 1.0)
             y, x = margin + label + r * cell, margin + label + c * cell
             canvas[y : y + cell, x : x + cell] = block
             cells.append(
@@ -416,7 +418,7 @@ def step_wedge(
             }
         )
 
-    full_blocker = apply_blocker(np.ones((1, 1), dtype=np.float32), blocker_rgb, saturation)[0, 0]
+    full_blocker = apply_blocker(np.zeros((1, 1), dtype=np.float32), blocker_rgb, saturation)[0, 0]
     canvas, fiducials = apply_frame(apply_blocker(n, blocker_rgb, saturation), border, tuple(full_blocker))
 
     sidecar = {

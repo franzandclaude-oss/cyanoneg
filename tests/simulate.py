@@ -29,30 +29,28 @@ def render_print(target: Target, response=None, *, cell_response=None) -> np.nda
     """Render the cyanotype print of a target in print orientation, as linear Y.
 
     ``response`` maps a wedge cell's normalised value in [0, 1] → normalised print
-    response in [0, 1] (0 = paper white, 1 = max black). For targets without a ``value``
-    key (the blocker grid), pass ``cell_response`` taking the whole cell dict instead.
-    The border (full blocker) responds 0; fiducials (clear film) respond 1.
+    **lightness** in [0, 1] (0 = max black, 1 = paper white), matching what
+    ``analyze_wedge`` measures. For targets without a ``value`` key (the blocker grids),
+    pass ``cell_response`` taking the whole cell dict instead.
+
+    Everything that is not a labelled cell — border, margins, fiducials, printed labels —
+    is rendered from the film's own ink coverage, so the polarity can never drift out of
+    step with the generator: heavy ink blocks UV and prints light, clear film prints dark.
     """
     sidecar = target.sidecar
-    h, w = target.film.shape[:2]
-    r = np.zeros((h, w), dtype=np.float64)  # border and margins: paper white
+    film_print_view = target.film[:, ::-1]  # contact printing un-mirrors the film
+    ink = 1.0 - film_print_view.min(axis=-1).astype(np.float64)
+    lightness_norm = ink.copy()  # clear film (ink 0) → black; full ink → paper white
 
     if cell_response is None:
         cell_response = lambda cell: response(cell["value"] / (sidecar["levels"] - 1))  # noqa: E731
     for cell in sidecar["cells"] + sidecar.get("references", []):
-        r[
+        lightness_norm[
             cell["y_px"] : cell["y_px"] + cell["h_px"],
             cell["x_px"] : cell["x_px"] + cell["w_px"],
         ] = float(cell_response(cell))
 
-    for f in sidecar["fiducials"].values():
-        y, x, s = f["y_px"], f["x_px"], f["size_px"]
-        r[y : y + s, x : x + s] = 1.0
-        if f["hollow"]:
-            q = s // 3
-            r[y + q : y + s - q, x + q : x + s - q] = 0.0
-
-    lstar = PAPER_LSTAR - r * (PAPER_LSTAR - BLACK_LSTAR)
+    lstar = BLACK_LSTAR + lightness_norm * (PAPER_LSTAR - BLACK_LSTAR)
     return _lstar_to_y(lstar)
 
 

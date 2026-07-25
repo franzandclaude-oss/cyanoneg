@@ -54,7 +54,8 @@ class TestStepWedge:
         border_px = wedge.sidecar["fiducials"]["top_left"]["size_px"]
         mid_x = wedge.film.shape[1] // 2
         top_strip = wedge.film[: border_px // 2, mid_x - 50 : mid_x + 50]
-        expected = apply_blocker(np.ones((1, 1), dtype=np.float32), (255, 0, 0), 1.0)[0, 0]
+        # Zero = black in the negative = maximum ink.
+        expected = apply_blocker(np.zeros((1, 1), dtype=np.float32), (255, 0, 0), 1.0)[0, 0]
         assert np.abs(top_strip - expected).max() < 1 / 255
 
     def test_fiducials_asymmetric(self, wedge):
