@@ -1,0 +1,74 @@
+{
+  "generator": "cyanoneg 0.1.0",
+  "target": "exposure_strip",
+  "ppi": 360,
+  "working_space": "srgb",
+  "coordinates": "print orientation (pre-flip); film TIFF is mirrored horizontally",
+  "zones": 8,
+  "zone_mm": 22.0,
+  "height_mm": 30.0,
+  "blocker_rgb": [
+    255,
+    0,
+    0
+  ],
+  "layout": [
+    {
+      "zone": 1,
+      "x_px": 0,
+      "w_px": 312,
+      "clear_half": "top",
+      "blocker_half": "bottom"
+    },
+    {
+      "zone": 2,
+      "x_px": 312,
+      "w_px": 312,
+      "clear_half": "top",
+      "blocker_half": "bottom"
+    },
+    {
+      "zone": 3,
+      "x_px": 624,
+      "w_px": 312,
+      "clear_half": "top",
+      "blocker_half": "bottom"
+    },
+    {
+      "zone": 4,
+      "x_px": 936,
+      "w_px": 312,
+      "clear_half": "top",
+      "blocker_half": "bottom"
+    },
+    {
+      "zone": 5,
+      "x_px": 1248,
+      "w_px": 312,
+      "clear_half": "top",
+      "blocker_half": "bottom"
+    },
+    {
+      "zone": 6,
+      "x_px": 1560,
+      "w_px": 312,
+      "clear_half": "top",
+      "blocker_half": "bottom"
+    },
+    {
+      "zone": 7,
+      "x_px": 1872,
+      "w_px": 312,
+      "clear_half": "top",
+      "blocker_half": "bottom"
+    },
+    {
+      "zone": 8,
+      "x_px": 2184,
+      "w_px": 312,
+      "clear_half": "top",
+      "blocker_half": "bottom"
+    }
+  ],
+  "usage": "cover zones progressively; SPE = shortest time whose clear half matches the next"
+}
