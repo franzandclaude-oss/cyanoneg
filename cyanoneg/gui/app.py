@@ -106,6 +106,7 @@ class App:
             self.cal_profile_var.set(non_linear[0] if non_linear else names[0])
         self._refresh_profile_list()
         self._on_profile_selected()
+        self._refresh_wizard_state()
         if errors:
             messagebox.showwarning("Profiles", "Some profiles failed to load:\n" + "\n".join(errors))
 
@@ -114,95 +115,122 @@ class App:
 
     # ------------------------------------------------------------------ Process tab
 
+    @staticmethod
+    def _form_row(parent, label: str, row: int):
+        """Label in a fixed-width column so every form lines up down the app."""
+        ttk.Label(parent, text=label, width=theme.LABEL_WIDTH, anchor=W).grid(
+            row=row, column=0, sticky=W, pady=theme.ROW_GAP
+        )
+        holder = ttk.Frame(parent)
+        holder.grid(row=row, column=1, sticky=W + E, pady=theme.ROW_GAP)
+        return holder
+
     def _build_process_tab(self) -> None:
         tab = self.process_tab
         left = ttk.Frame(tab)
-        left.pack(side=LEFT, fill=BOTH, expand=False, padx=(0, 10))
-        right = ttk.LabelFrame(tab, text="Preview")
+        left.pack(side=LEFT, fill=BOTH, expand=False, padx=(0, theme.WIDE_GAP))
+        right = ttk.Frame(tab)
         right.pack(side=RIGHT, fill=BOTH, expand=True)
 
-        modes = ttk.Frame(right)
-        modes.pack(fill=X, padx=theme.GAP, pady=(theme.GAP, 0))
+        # ---- preview, given the room it needs ----
+        header = ttk.Frame(right)
+        header.pack(fill=X)
+        ttk.Label(header, text="Preview", style="Heading.TLabel").pack(side=LEFT)
         self.preview_mode = StringVar(value="film")
-        for value, label in (("film", "Film (mirrored)"), ("proof", "Soft proof")):
+        for value, label in (("proof", "Soft proof"), ("film", "Film (mirrored)")):
             ttk.Radiobutton(
-                modes, text=label, value=value, variable=self.preview_mode, command=self._redraw_preview
-            ).pack(side=LEFT, padx=(0, theme.WIDE_GAP))
-        self.proof_note = ttk.Label(modes, text="", foreground=theme.WARN, wraplength=300)
-        self.proof_note.pack(side=LEFT)
+                header, text=label, value=value, variable=self.preview_mode, command=self._redraw_preview
+            ).pack(side=RIGHT, padx=(theme.WIDE_GAP, 0))
 
-        self.preview_label = ttk.Label(right, anchor="center")
-        self.preview_label.pack(fill=BOTH, expand=True, padx=theme.GAP, pady=theme.GAP)
+        self.proof_note = ttk.Label(right, text="", style="Warn.TLabel", wraplength=520)
 
-        row = 0
-        grid = ttk.Frame(left)
-        grid.pack(fill=X)
+        stage = ttk.Frame(right, style="Chrome.TFrame")
+        stage.pack(fill=BOTH, expand=True, pady=theme.GAP)
+        self.preview_label = ttk.Label(
+            stage, anchor="center", background=theme.CANVAS_BG, text="No negative yet", foreground=theme.TEXT_MUTED
+        )
+        self.preview_label.pack(fill=BOTH, expand=True)
 
-        def add_row(label: str) -> int:
-            nonlocal row
-            ttk.Label(grid, text=label).grid(row=row, column=0, sticky=W, pady=3)
-            row += 1
-            return row - 1
+        self.preview_caption = ttk.Label(right, text="", style="Mono.TLabel")
+        self.preview_caption.pack(fill=X)
 
-        # Source
-        r = add_row("Source positive")
+        # ---- source ----
+        source_box = ttk.LabelFrame(left, text="Source", padding=theme.GROUP_PAD)
+        source_box.pack(fill=X)
+        source_box.columnconfigure(1, weight=1)
+
+        holder = self._form_row(source_box, "Positive scan", 0)
         self.source_var = StringVar()
-        ttk.Entry(grid, textvariable=self.source_var, width=42).grid(row=r, column=1, sticky=W + E)
-        ttk.Button(grid, text="…", width=3, command=self._pick_source).grid(row=r, column=2, padx=3)
+        ttk.Entry(holder, textvariable=self.source_var, width=theme.FIELD_WIDTH).pack(side=LEFT)
+        ttk.Button(holder, text="…", width=3, style="Small.TButton", command=self._pick_source).pack(
+            side=LEFT, padx=(theme.GAP, 0)
+        )
 
-        r = add_row("Colour space")
+        holder = self._form_row(source_box, "Colour space", 1)
         self.space_var = StringVar(value="auto")
         ttk.Combobox(
-            grid, textvariable=self.space_var, values=("auto", *cio.SPACES), state="readonly", width=12
-        ).grid(row=r, column=1, sticky=W)
+            holder, textvariable=self.space_var, values=("auto", *cio.SPACES), state="readonly", width=12
+        ).pack(side=LEFT)
 
         self.raw_var = StringVar(value="0")
         ttk.Checkbutton(
-            grid, text="Raw scan (un-inverted negative)", variable=self.raw_var, onvalue="1", offvalue="0"
-        ).grid(row=row, column=1, sticky=W, pady=3)
-        row += 1
+            source_box,
+            text="Raw scan (un-inverted negative)",
+            variable=self.raw_var,
+            onvalue="1",
+            offvalue="0",
+        ).grid(row=2, column=1, sticky=W)
 
-        # Profile
-        r = add_row("Profile")
+        holder = self._form_row(source_box, "Channel weights", 3)
+        self.weights_var = StringVar(value=",".join(str(w) for w in DEFAULT_WEIGHTS))
+        ttk.Entry(holder, textvariable=self.weights_var, width=14).pack(side=LEFT)
+        ttk.Button(holder, text="Analyse noise", style="Small.TButton", command=self._analyse_noise).pack(
+            side=LEFT, padx=(theme.GAP, 0)
+        )
+
+        # ---- profile ----
+        profile_box = ttk.LabelFrame(left, text="Profile", padding=theme.GROUP_PAD)
+        profile_box.pack(fill=X, pady=(theme.GAP, 0))
+        profile_box.columnconfigure(1, weight=1)
+
+        holder = self._form_row(profile_box, "Paper profile", 0)
         self.profile_var = StringVar()
-        self.profile_box = ttk.Combobox(grid, textvariable=self.profile_var, state="readonly", width=32)
-        self.profile_box.grid(row=r, column=1, sticky=W)
+        self.profile_box = ttk.Combobox(holder, textvariable=self.profile_var, state="readonly", width=30)
+        self.profile_box.pack(side=LEFT)
         self.profile_box.bind("<<ComboboxSelected>>", lambda _e: self._on_profile_selected())
 
-        self.profile_note = ttk.Label(grid, text="", foreground=theme.WARN, wraplength=340)
-        self.profile_note.grid(row=row, column=1, sticky=W)
-        row += 1
+        self.profile_note = ttk.Label(profile_box, text="", style="Warn.TLabel", wraplength=380)
+        self.profile_note.grid(row=1, column=0, columnspan=2, sticky=W)
+        self.profile_note.grid_remove()  # takes no space until it has something to say
 
-        # Size / ppi
-        r = add_row("Print size (mm)")
-        size = ttk.Frame(grid)
-        size.grid(row=r, column=1, sticky=W)
+        # ---- output ----
+        output_box = ttk.LabelFrame(left, text="Output", padding=theme.GROUP_PAD)
+        output_box.pack(fill=X, pady=(theme.GAP, 0))
+        output_box.columnconfigure(1, weight=1)
+
+        holder = self._form_row(output_box, "Print size (mm)", 0)
         self.width_var, self.height_var = StringVar(value="240"), StringVar(value="180")
-        ttk.Entry(size, textvariable=self.width_var, width=7).pack(side=LEFT)
-        ttk.Label(size, text=" × ").pack(side=LEFT)
-        ttk.Entry(size, textvariable=self.height_var, width=7).pack(side=LEFT)
-        ttk.Label(size, text="  ppi ").pack(side=LEFT)
+        ttk.Entry(holder, textvariable=self.width_var, width=theme.NARROW_WIDTH).pack(side=LEFT)
+        ttk.Label(holder, text="×").pack(side=LEFT, padx=theme.GAP)
+        ttk.Entry(holder, textvariable=self.height_var, width=theme.NARROW_WIDTH).pack(side=LEFT)
+        ttk.Label(holder, text="at").pack(side=LEFT, padx=theme.GAP)
         self.ppi_var = StringVar(value=str(DEFAULT_OUTPUT_PPI))
-        ttk.Entry(size, textvariable=self.ppi_var, width=6).pack(side=LEFT)
+        ttk.Entry(holder, textvariable=self.ppi_var, width=6).pack(side=LEFT)
+        ttk.Label(holder, text="ppi", style="Muted.TLabel").pack(side=LEFT, padx=(theme.GAP, 0))
 
-        # Weights
-        r = add_row("Channel weights R,G,B")
-        weights = ttk.Frame(grid)
-        weights.grid(row=r, column=1, sticky=W)
-        self.weights_var = StringVar(value=",".join(str(w) for w in DEFAULT_WEIGHTS))
-        ttk.Entry(weights, textvariable=self.weights_var, width=16).pack(side=LEFT)
-        ttk.Button(weights, text="Analyse noise", command=self._analyse_noise).pack(side=LEFT, padx=4)
-
-        # Output
-        r = add_row("Output TIFF")
+        holder = self._form_row(output_box, "Save to", 1)
         self.output_var = StringVar()
-        ttk.Entry(grid, textvariable=self.output_var, width=42).grid(row=r, column=1, sticky=W + E)
-        ttk.Button(grid, text="…", width=3, command=self._pick_output).grid(row=r, column=2, padx=3)
+        ttk.Entry(holder, textvariable=self.output_var, width=theme.FIELD_WIDTH).pack(side=LEFT)
+        ttk.Button(holder, text="…", width=3, style="Small.TButton", command=self._pick_output).pack(
+            side=LEFT, padx=(theme.GAP, 0)
+        )
 
-        self.process_button = ttk.Button(left, text="Make negative", command=self._process)
-        self.process_button.pack(fill=X, pady=(10, 4))
+        self.process_button = ttk.Button(
+            left, text="Make negative", style="Accent.TButton", command=self._process
+        )
+        self.process_button.pack(fill=X, pady=(theme.WIDE_GAP, theme.GAP))
 
-        self.status = ttk.Label(left, text="", wraplength=380, foreground=theme.OK)
+        self.status = ttk.Label(left, text="", wraplength=420, style="OK.TLabel")
         self.status.pack(fill=X)
 
     def _pick_source(self) -> None:
@@ -234,6 +262,7 @@ class App:
         if not profile.is_ready_to_print:
             notes.append("No blocker colour yet: print and read the HSB grid before using this profile.")
         self.profile_note.config(text=" ".join(notes))
+        self.profile_note.grid() if notes else self.profile_note.grid_remove()
 
     def _parse_weights(self) -> tuple[float, float, float]:
         parts = [float(v) for v in self.weights_var.get().split(",")]
@@ -322,6 +351,7 @@ class App:
         profile = self._current_profile()
         data = negative.data
         self.proof_note.config(text="")
+        self.proof_note.pack_forget()
 
         if self.preview_mode.get() == "proof":
             if profile is None or not can_proof(profile):
@@ -329,15 +359,22 @@ class App:
                     text="No measured response in this profile — calibrate first; "
                     "a proof without measurements would be invented."
                 )
+                self.proof_note.pack(fill=X, pady=(theme.GAP, 0), before=self.preview_label.master)
                 self.preview_mode.set("film")
             else:
                 data = soft_proof(negative, profile).data
 
         arr = (np.clip(data, 0.0, 1.0) * 255).astype(np.uint8)
         pil = PILImage.fromarray(arr)
+        full_h, full_w = data.shape[:2]
         pil.thumbnail((theme.PREVIEW_MAX, theme.PREVIEW_MAX))
         self.preview_photo = ImageTk.PhotoImage(pil)
-        self.preview_label.config(image=self.preview_photo)
+        self.preview_label.config(image=self.preview_photo, text="")
+        mm = ""
+        if negative.ppi:
+            mm = f"   {full_w / negative.ppi * 25.4:.0f} × {full_h / negative.ppi * 25.4:.0f} mm"
+        kind = "predicted print" if self.preview_mode.get() == "proof" else "film, ink side down"
+        self.preview_caption.config(text=f"{full_w} × {full_h} px{mm}   ·   {kind}")
 
     def _poll_queue(self) -> None:
         try:
@@ -399,7 +436,10 @@ class App:
         left = ttk.Frame(tab)
         left.pack(side=LEFT, fill=BOTH, padx=(0, 10))
 
-        ttk.Label(left, text=f"Profiles in {PROFILE_DIR}").pack(anchor=W)
+        ttk.Label(left, text="Profiles", style="Heading.TLabel").pack(anchor=W)
+        ttk.Label(left, text=str(PROFILE_DIR), style="Muted.TLabel", wraplength=380).pack(
+            anchor=W, pady=(0, theme.GAP)
+        )
         self.profile_list = ttk.Treeview(left, columns=("state",), show="tree headings", height=16)
         self.profile_list.heading("#0", text="Profile")
         self.profile_list.heading("state", text="State")
@@ -425,7 +465,8 @@ class App:
             side=LEFT, padx=4
         )
 
-        self.detail = ScrolledText(tab, width=58, state=DISABLED, font=theme.MONO)
+        self.detail = ScrolledText(tab, width=58, state=DISABLED)
+        theme.style_text(self.detail)
         self.detail.pack(side=RIGHT, fill=BOTH, expand=True)
 
     def _refresh_profile_list(self) -> None:
@@ -509,51 +550,63 @@ class App:
 
     def _build_batch_tab(self) -> None:
         tab = self.batch_tab
-        grid = ttk.Frame(tab)
-        grid.pack(fill=X)
+        ttk.Label(tab, text="Process a whole folder", style="Heading.TLabel").pack(anchor=W)
+        ttk.Label(
+            tab,
+            text="One profile applied to every image. A file that cannot be read is reported and skipped —"
+            " the rest of the run continues.",
+            style="Muted.TLabel",
+            wraplength=900,
+        ).pack(anchor=W, pady=(theme.ROW_GAP, theme.GAP))
 
-        ttk.Label(grid, text="Folder of positives").grid(row=0, column=0, sticky=W, pady=3)
+        box = ttk.LabelFrame(tab, text="Settings", padding=theme.GROUP_PAD)
+        box.pack(fill=X)
+        box.columnconfigure(1, weight=1)
+
+        holder = self._form_row(box, "Positives folder", 0)
         self.batch_src_var = StringVar()
-        ttk.Entry(grid, textvariable=self.batch_src_var, width=52).grid(row=0, column=1, sticky=W + E)
-        ttk.Button(grid, text="…", width=3, command=lambda: self._pick_dir(self.batch_src_var)).grid(
-            row=0, column=2, padx=3
-        )
+        ttk.Entry(holder, textvariable=self.batch_src_var, width=48).pack(side=LEFT)
+        ttk.Button(
+            holder, text="…", width=3, style="Small.TButton", command=lambda: self._pick_dir(self.batch_src_var)
+        ).pack(side=LEFT, padx=(theme.GAP, 0))
 
-        ttk.Label(grid, text="Output folder").grid(row=1, column=0, sticky=W, pady=3)
+        holder = self._form_row(box, "Output folder", 1)
         self.batch_out_var = StringVar(value="out")
-        ttk.Entry(grid, textvariable=self.batch_out_var, width=52).grid(row=1, column=1, sticky=W + E)
-        ttk.Button(grid, text="…", width=3, command=lambda: self._pick_dir(self.batch_out_var)).grid(
-            row=1, column=2, padx=3
-        )
+        ttk.Entry(holder, textvariable=self.batch_out_var, width=48).pack(side=LEFT)
+        ttk.Button(
+            holder, text="…", width=3, style="Small.TButton", command=lambda: self._pick_dir(self.batch_out_var)
+        ).pack(side=LEFT, padx=(theme.GAP, 0))
 
-        ttk.Label(grid, text="Profile").grid(row=2, column=0, sticky=W, pady=3)
+        holder = self._form_row(box, "Profile", 2)
         self.batch_profile_var = StringVar()
         self.batch_profile_box = ttk.Combobox(
-            grid, textvariable=self.batch_profile_var, state="readonly", width=32
+            holder, textvariable=self.batch_profile_var, state="readonly", width=30
         )
-        self.batch_profile_box.grid(row=2, column=1, sticky=W)
+        self.batch_profile_box.pack(side=LEFT)
 
-        ttk.Label(grid, text="Print size (mm)").grid(row=3, column=0, sticky=W, pady=3)
-        size = ttk.Frame(grid)
-        size.grid(row=3, column=1, sticky=W)
+        holder = self._form_row(box, "Print size (mm)", 3)
         self.batch_w_var, self.batch_h_var = StringVar(value="240"), StringVar(value="180")
-        ttk.Entry(size, textvariable=self.batch_w_var, width=7).pack(side=LEFT)
-        ttk.Label(size, text=" × ").pack(side=LEFT)
-        ttk.Entry(size, textvariable=self.batch_h_var, width=7).pack(side=LEFT)
-        ttk.Label(size, text="  ppi ").pack(side=LEFT)
+        ttk.Entry(holder, textvariable=self.batch_w_var, width=theme.NARROW_WIDTH).pack(side=LEFT)
+        ttk.Label(holder, text="×").pack(side=LEFT, padx=theme.GAP)
+        ttk.Entry(holder, textvariable=self.batch_h_var, width=theme.NARROW_WIDTH).pack(side=LEFT)
+        ttk.Label(holder, text="at").pack(side=LEFT, padx=theme.GAP)
         self.batch_ppi_var = StringVar(value=str(DEFAULT_OUTPUT_PPI))
-        ttk.Entry(size, textvariable=self.batch_ppi_var, width=6).pack(side=LEFT)
+        ttk.Entry(holder, textvariable=self.batch_ppi_var, width=6).pack(side=LEFT)
+        ttk.Label(holder, text="ppi", style="Muted.TLabel").pack(side=LEFT, padx=(theme.GAP, 0))
 
         controls = ttk.Frame(tab)
-        controls.pack(fill=X, pady=theme.GAP)
-        self.batch_button = ttk.Button(controls, text="Process folder", command=self._run_batch)
+        controls.pack(fill=X, pady=theme.WIDE_GAP)
+        self.batch_button = ttk.Button(
+            controls, text="Process folder", style="Accent.TButton", command=self._run_batch
+        )
         self.batch_button.pack(side=LEFT)
-        self.batch_progress = ttk.Progressbar(controls, mode="determinate", length=340)
+        self.batch_progress = ttk.Progressbar(controls, mode="determinate", length=380)
         self.batch_progress.pack(side=LEFT, padx=theme.WIDE_GAP)
-        self.batch_status = ttk.Label(controls, text="", foreground=theme.OK)
+        self.batch_status = ttk.Label(controls, text="", style="OK.TLabel")
         self.batch_status.pack(side=LEFT)
 
-        self.batch_log = ScrolledText(tab, height=18, state=DISABLED, font=theme.MONO)
+        self.batch_log = ScrolledText(tab, height=16, state=DISABLED)
+        theme.style_text(self.batch_log)
         self.batch_log.pack(fill=BOTH, expand=True)
 
     def _pick_dir(self, var: StringVar) -> None:
@@ -622,84 +675,152 @@ class App:
 
         top = ttk.Frame(tab)
         top.pack(fill=X)
-        ttk.Label(top, text="Calibrating profile:").pack(side=LEFT)
+        ttk.Label(top, text="Calibrating", style="Heading.TLabel").pack(side=LEFT)
         self.cal_profile_var = StringVar()
         self.cal_profile_box = ttk.Combobox(top, textvariable=self.cal_profile_var, state="readonly", width=30)
-        self.cal_profile_box.pack(side=LEFT, padx=6)
-        self.cal_status = ttk.Label(top, text="", foreground=theme.OK)
-        self.cal_status.pack(side=LEFT, padx=10)
+        self.cal_profile_box.pack(side=LEFT, padx=theme.GAP)
+        self.cal_profile_box.bind("<<ComboboxSelected>>", lambda _e: self._refresh_wizard_state())
+        self.cal_status = ttk.Label(top, text="", style="OK.TLabel")
+        self.cal_status.pack(side=LEFT, padx=theme.WIDE_GAP)
+
+        ttk.Label(
+            tab,
+            text="Each step prints through the linear profile, so measurements capture the process itself"
+            " rather than the process plus a curve.",
+            style="Muted.TLabel",
+            wraplength=1000,
+        ).pack(anchor=W, pady=(theme.ROW_GAP, theme.GAP))
 
         # --- Step 1: exposure -------------------------------------------------
-        step1 = ttk.LabelFrame(tab, text="Step 1 — Exposure (SPE)", padding=theme.GROUP_PAD)
-        step1.pack(fill=X, pady=(8, 4))
+        step1, body = self._wizard_step(tab, 1, "Exposure", "Find the standard printing exposure")
+        self.step1_state = step1
         ttk.Label(
-            step1,
-            text=(
-                "Print the exposure strip through the linear profile, expose progressively\n"
-                "(cover one zone per interval), process, dry. SPE is the shortest time whose\n"
-                "clear half matches the next zone's."
-            ),
-            justify=LEFT,
+            body,
+            text="Print the strip, expose progressively (cover one zone per interval), process, dry."
+            " SPE is the shortest time whose clear half matches the next zone's.",
+            style="Muted.TLabel",
+            wraplength=860,
         ).pack(anchor=W)
-        row1 = ttk.Frame(step1)
-        row1.pack(anchor=W, pady=(6, 0))
-        ttk.Button(row1, text="Generate strip", command=lambda: self._generate_target("exposure")).pack(side=LEFT)
-        ttk.Label(row1, text="SPE seconds:").pack(side=LEFT, padx=(16, 2))
+        row1 = ttk.Frame(body)
+        row1.pack(anchor=W, pady=(theme.GAP, 0))
+        ttk.Button(
+            row1, text="Generate strip", style="Small.TButton", command=lambda: self._generate_target("exposure")
+        ).pack(side=LEFT)
+        ttk.Label(row1, text="SPE seconds").pack(side=LEFT, padx=(theme.WIDE_GAP, theme.GAP))
         self.spe_var = StringVar()
-        ttk.Entry(row1, textvariable=self.spe_var, width=8).pack(side=LEFT)
-        ttk.Label(row1, text="UV source:").pack(side=LEFT, padx=(12, 2))
+        ttk.Entry(row1, textvariable=self.spe_var, width=theme.NARROW_WIDTH).pack(side=LEFT)
+        ttk.Label(row1, text="UV source").pack(side=LEFT, padx=(theme.WIDE_GAP, theme.GAP))
         self.uv_var = StringVar()
-        ttk.Entry(row1, textvariable=self.uv_var, width=24).pack(side=LEFT)
-        ttk.Button(row1, text="Save to profile", command=self._save_exposure).pack(side=LEFT, padx=8)
+        ttk.Entry(row1, textvariable=self.uv_var, width=26).pack(side=LEFT)
+        ttk.Button(row1, text="Save", style="Small.TButton", command=self._save_exposure).pack(
+            side=LEFT, padx=(theme.WIDE_GAP, 0)
+        )
 
         # --- Step 2: blocker --------------------------------------------------
-        step2 = ttk.LabelFrame(tab, text="Step 2 — Blocker (HSB grid)", padding=theme.GROUP_PAD)
-        step2.pack(fill=X, pady=4)
-        ttk.Button(step2, text="Generate grid", command=lambda: self._generate_target("grid")).grid(
-            row=0, column=0, sticky=W
-        )
-        ttk.Label(step2, text="Scan of grid print:").grid(row=0, column=1, padx=(16, 2))
+        step2, body = self._wizard_step(tab, 2, "Blocker", "Measure the best UV-blocking hue")
+        self.step2_state = step2
+        row = ttk.Frame(body)
+        row.pack(fill=X)
+        ttk.Button(
+            row, text="Generate grid", style="Small.TButton", command=lambda: self._generate_target("grid")
+        ).pack(side=LEFT)
+        ttk.Label(row, text="Scan of grid print").pack(side=LEFT, padx=(theme.WIDE_GAP, theme.GAP))
         self.grid_scan_var = StringVar()
-        ttk.Entry(step2, textvariable=self.grid_scan_var, width=36).grid(row=0, column=2)
-        ttk.Button(step2, text="…", width=3, command=lambda: self._pick_scan(self.grid_scan_var)).grid(
-            row=0, column=3, padx=2
-        )
-        ttk.Button(step2, text="Analyse", command=self._analyse_grid).grid(row=0, column=4, padx=8)
-        self.grid_result = ttk.Label(step2, text="(no analysis yet)", justify=LEFT, font=theme.MONO)
-        self.grid_result.grid(row=1, column=0, columnspan=5, sticky=W, pady=4)
-        apply_row = ttk.Frame(step2)
-        apply_row.grid(row=2, column=0, columnspan=5, sticky=W)
-        ttk.Label(apply_row, text="Apply hue°:").pack(side=LEFT)
+        ttk.Entry(row, textvariable=self.grid_scan_var, width=theme.FIELD_WIDTH).pack(side=LEFT)
+        ttk.Button(
+            row, text="…", width=3, style="Small.TButton", command=lambda: self._pick_scan(self.grid_scan_var)
+        ).pack(side=LEFT, padx=theme.GAP)
+        ttk.Button(row, text="Analyse", style="Small.TButton", command=self._analyse_grid).pack(side=LEFT)
+
+        self.grid_result = ttk.Label(body, text="Not analysed yet.", justify=LEFT, style="Mono.TLabel")
+        self.grid_result.pack(anchor=W, pady=theme.GAP)
+
+        apply_row = ttk.Frame(body)
+        apply_row.pack(anchor=W)
+        ttk.Label(apply_row, text="Hue°").pack(side=LEFT)
         self.hue_var = StringVar()
-        ttk.Entry(apply_row, textvariable=self.hue_var, width=6).pack(side=LEFT, padx=2)
-        ttk.Label(apply_row, text="saturation:").pack(side=LEFT, padx=(8, 2))
+        ttk.Entry(apply_row, textvariable=self.hue_var, width=6).pack(side=LEFT, padx=theme.GAP)
+        ttk.Label(apply_row, text="Saturation").pack(side=LEFT, padx=(theme.GAP, 0))
         self.sat_var = StringVar()
-        ttk.Entry(apply_row, textvariable=self.sat_var, width=6).pack(side=LEFT)
-        ttk.Button(apply_row, text="Save blocker to profile", command=self._save_blocker).pack(side=LEFT, padx=10)
+        ttk.Entry(apply_row, textvariable=self.sat_var, width=6).pack(side=LEFT, padx=theme.GAP)
+        ttk.Button(apply_row, text="Save blocker", style="Small.TButton", command=self._save_blocker).pack(
+            side=LEFT, padx=(theme.GAP, 0)
+        )
 
         # --- Step 3: linearise ------------------------------------------------
-        step3 = ttk.LabelFrame(tab, text="Step 3 — Linearisation (256-step wedge)", padding=theme.GROUP_PAD)
-        step3.pack(fill=BOTH, expand=True, pady=4)
-        ttk.Button(step3, text="Generate wedge", command=lambda: self._generate_target("wedge")).grid(
-            row=0, column=0, sticky=W
-        )
-        ttk.Label(step3, text="Scan of wedge print:").grid(row=0, column=1, padx=(16, 2))
+        step3, body = self._wizard_step(tab, 3, "Linearisation", "Derive the correction curve", expand=True)
+        self.step3_state = step3
+        row = ttk.Frame(body)
+        row.pack(fill=X)
+        ttk.Button(
+            row, text="Generate wedge", style="Small.TButton", command=lambda: self._generate_target("wedge")
+        ).pack(side=LEFT)
+        ttk.Label(row, text="Scan of wedge print").pack(side=LEFT, padx=(theme.WIDE_GAP, theme.GAP))
         self.wedge_scan_var = StringVar()
-        ttk.Entry(step3, textvariable=self.wedge_scan_var, width=36).grid(row=0, column=2)
-        ttk.Button(step3, text="…", width=3, command=lambda: self._pick_scan(self.wedge_scan_var)).grid(
-            row=0, column=3, padx=2
-        )
-        ttk.Button(step3, text="Analyse", command=self._analyse_wedge).grid(row=0, column=4, padx=8)
-        self.wedge_result = ttk.Label(step3, text="(no analysis yet)", justify=LEFT, font=theme.MONO)
-        self.wedge_result.grid(row=1, column=0, columnspan=4, sticky="nw", pady=4)
+        ttk.Entry(row, textvariable=self.wedge_scan_var, width=theme.FIELD_WIDTH).pack(side=LEFT)
+        ttk.Button(
+            row, text="…", width=3, style="Small.TButton", command=lambda: self._pick_scan(self.wedge_scan_var)
+        ).pack(side=LEFT, padx=theme.GAP)
+        ttk.Button(row, text="Analyse", style="Small.TButton", command=self._analyse_wedge).pack(side=LEFT)
+
+        lower = ttk.Frame(body)
+        lower.pack(fill=BOTH, expand=True, pady=(theme.GAP, 0))
+
         from tkinter import Canvas
 
-        self.curve_canvas = Canvas(step3, width=theme.CURVE_SIZE, height=theme.CURVE_SIZE, background=theme.CANVAS_BG, highlightthickness=1)
-        self.curve_canvas.grid(row=1, column=4, rowspan=2, padx=8, pady=4)
+        self.curve_canvas = Canvas(lower, width=theme.CURVE_SIZE, height=theme.CURVE_SIZE)
+        theme.style_canvas(self.curve_canvas)
+        self.curve_canvas.pack(side=RIGHT, padx=(theme.WIDE_GAP, 0))
+
+        self.wedge_result = ttk.Label(lower, text="Not analysed yet.", justify=LEFT, style="Mono.TLabel")
+        self.wedge_result.pack(anchor="nw")
         self.save_measured_button = ttk.Button(
-            step3, text="Save measured profile (+ .cube/.acv)", command=self._save_measured, state=DISABLED
+            lower,
+            text="Save measured profile  (+ .cube / .acv)",
+            style="Accent.TButton",
+            command=self._save_measured,
+            state=DISABLED,
         )
-        self.save_measured_button.grid(row=2, column=0, columnspan=3, sticky=W, pady=4)
+        self.save_measured_button.pack(anchor=W, pady=(theme.GAP, 0))
+
+    def _wizard_step(self, parent, number: int, title: str, subtitle: str, expand: bool = False):
+        """A numbered step panel. Returns (state_label, body_frame)."""
+        box = ttk.Frame(parent)
+        box.pack(fill=BOTH if expand else X, expand=expand, pady=(0, theme.GAP))
+
+        head = ttk.Frame(box)
+        head.pack(fill=X)
+        ttk.Label(head, text=str(number), style="Step.TLabel", width=3).pack(side=LEFT)
+        # The state label is packed before the expanding title block: pack gives space in
+        # order, so a preceding expand=True sibling would leave it nothing and unmapped.
+        state = ttk.Label(head, text="pending", style="Muted.TLabel", anchor="e")
+        state.pack(side=RIGHT, padx=(theme.GAP, 0))
+        titles = ttk.Frame(head)
+        titles.pack(side=LEFT, fill=X, expand=True)
+        ttk.Label(titles, text=title, style="Heading.TLabel").pack(anchor=W)
+        ttk.Label(titles, text=subtitle, style="Muted.TLabel").pack(anchor=W)
+
+        body = ttk.Frame(box, padding=(theme.WIDE_GAP + theme.GROUP_PAD, theme.GAP, 0, 0))
+        body.pack(fill=BOTH if expand else X, expand=expand)
+        ttk.Separator(box, orient="horizontal").pack(fill=X, pady=(theme.GAP, 0))
+        return state, body
+
+    def _refresh_wizard_state(self) -> None:
+        """Show which calibration steps this profile has actually recorded."""
+        profile = self.profiles.get(self.cal_profile_var.get())
+        if profile is None:
+            return
+        done = ("done", "OK.TLabel")
+        pending = ("pending", "Muted.TLabel")
+
+        text, style = done if profile.exposure.get("spe_seconds") else pending
+        self.step1_state.config(text=text, style=style)
+
+        text, style = done if profile.is_ready_to_print else pending
+        self.step2_state.config(text=text, style=style)
+
+        text, style = done if not profile.lut.is_identity() else pending
+        self.step3_state.config(text=text, style=style)
 
     def _pick_scan(self, var: StringVar) -> None:
         path = filedialog.askopenfilename(
@@ -718,6 +839,7 @@ class App:
         path = PROFILE_DIR / f"{self.cal_profile_var.get()}.json"
         profile.save(path)
         self._reload_profiles()
+        self._refresh_wizard_state()
         self.cal_status.config(text=f"Saved {path.name}")
 
     def _save_exposure(self) -> None:
@@ -809,13 +931,13 @@ class App:
         c = self.curve_canvas
         c.delete("all")
         size = theme.CURVE_SIZE
-        c.create_line(0, size, size, 0, fill=theme.CURVE_REFERENCE)  # identity reference
+        c.create_line(0, size, size, 0, fill=theme.CURVE_REFERENCE, dash=(3, 3))  # identity reference
         points = []
         for i, v in enumerate(result.lut.values):
             x = i / (len(result.lut.values) - 1) * (size - 1)
             y = (1.0 - v) * (size - 1)
             points.extend((x, y))
-        c.create_line(*points, fill=theme.CURVE, width=2)
+        c.create_line(*points, fill=theme.CURVE, width=2, smooth=True)
 
     def _save_measured(self) -> None:
         profile = self._cal_profile()
