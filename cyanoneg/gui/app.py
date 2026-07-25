@@ -52,7 +52,10 @@ class App:
     def __init__(self, root: Tk) -> None:
         self.root = root
         root.title("cyanoneg — cyanotype digital negatives")
-        root.geometry("980x640")
+        # Sized for the Calibrate tab, which is the widest: three step frames each with a
+        # generate button, a scan path field and an analyse button on one row.
+        root.geometry("1180x780")
+        root.minsize(1100, 720)
 
         self.queue: queue.Queue = queue.Queue()
         self.profiles: dict[str, Profile] = {}
@@ -469,22 +472,22 @@ class App:
         ttk.Label(
             step1,
             text=(
-                "Print the exposure strip through the linear profile, expose progressively "
-                "(cover one zone per interval), process, dry. SPE is the shortest time whose "
+                "Print the exposure strip through the linear profile, expose progressively\n"
+                "(cover one zone per interval), process, dry. SPE is the shortest time whose\n"
                 "clear half matches the next zone's."
             ),
-            wraplength=860,
-        ).grid(row=0, column=0, columnspan=6, sticky=W)
-        ttk.Button(step1, text="Generate strip", command=lambda: self._generate_target("exposure")).grid(
-            row=1, column=0, pady=4, sticky=W
-        )
-        ttk.Label(step1, text="SPE seconds:").grid(row=1, column=1, padx=(16, 2))
+            justify=LEFT,
+        ).pack(anchor=W)
+        row1 = ttk.Frame(step1)
+        row1.pack(anchor=W, pady=(6, 0))
+        ttk.Button(row1, text="Generate strip", command=lambda: self._generate_target("exposure")).pack(side=LEFT)
+        ttk.Label(row1, text="SPE seconds:").pack(side=LEFT, padx=(16, 2))
         self.spe_var = StringVar()
-        ttk.Entry(step1, textvariable=self.spe_var, width=8).grid(row=1, column=2)
-        ttk.Label(step1, text="UV source:").grid(row=1, column=3, padx=(12, 2))
+        ttk.Entry(row1, textvariable=self.spe_var, width=8).pack(side=LEFT)
+        ttk.Label(row1, text="UV source:").pack(side=LEFT, padx=(12, 2))
         self.uv_var = StringVar()
-        ttk.Entry(step1, textvariable=self.uv_var, width=28).grid(row=1, column=4)
-        ttk.Button(step1, text="Save to profile", command=self._save_exposure).grid(row=1, column=5, padx=8)
+        ttk.Entry(row1, textvariable=self.uv_var, width=24).pack(side=LEFT)
+        ttk.Button(row1, text="Save to profile", command=self._save_exposure).pack(side=LEFT, padx=8)
 
         # --- Step 2: blocker --------------------------------------------------
         step2 = ttk.LabelFrame(tab, text="Step 2 — Blocker (HSB grid)", padding=8)
