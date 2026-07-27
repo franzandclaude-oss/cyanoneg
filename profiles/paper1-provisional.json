@@ -3,21 +3,28 @@
   "paper": "Paper 1",
   "chemistry": "Chemistry",
   "printer": "Epson ET-1810",
-  "media_type": "Epson Glossy Photo Paper",
+  "media_type": "Photo Paper Glossy",
   "film": "Film 1",
   "working_space": "srgb",
   "provisional": true,
   "driver_settings": {
-    "color_correction": "TO RECORD",
-    "media_type": "Epson Glossy Photo Paper",
-    "quality": "TO RECORD"
+    "color_correction": "No Color Adjustment (More Options > Color Correction > Custom > Advanced) - confirmed present and selected 2026-07-27",
+    "media_type": "Photo Paper Glossy",
+    "quality": "High Standard",
+    "recorded": "2026-07-27 - locked in; exposure strip and blocker grid printed at these settings"
   },
   "blocker": {
     "model": "fixed_hue",
     "rgb": null,
     "saturation": null
   },
-  "exposure": {},
+  "exposure": {
+    "uv_source": "100W UV LED in light box",
+    "uv_wavelength_nm": "TO RECORD (365 or 395)",
+    "lamp_distance_mm": 350,
+    "warmup_seconds": 60,
+    "spe_seconds": null
+  },
   "lut": {
     "size": 256,
     "values": [
