@@ -248,8 +248,10 @@ def batch_negatives(
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
+    from . import use_utf8_console
     from .profiles import PROFILE_DIR
 
+    use_utf8_console()
     parser = argparse.ArgumentParser(prog="cyanoneg.pipeline", description="Batch-process positives")
     parser.add_argument("sources", type=Path, help="a directory of positives, or one image")
     parser.add_argument("--profile", type=Path, required=True, help="profile .json (or a name in profiles/)")

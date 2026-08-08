@@ -592,6 +592,9 @@ def analyze_zone_grid(scan_path: str | Path, sidecar_path: str | Path, *, space=
 
 
 def main(argv: list[str] | None = None) -> int:
+    from . import use_utf8_console
+
+    use_utf8_console()
     parser = argparse.ArgumentParser(prog="cyanoneg.analyze", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 

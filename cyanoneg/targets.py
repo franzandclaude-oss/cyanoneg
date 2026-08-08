@@ -441,6 +441,9 @@ def step_wedge(
 
 
 def main(argv: list[str] | None = None) -> int:
+    from . import use_utf8_console
+
+    use_utf8_console()
     parser = argparse.ArgumentParser(prog="cyanoneg.targets", description=__doc__)
     parser.add_argument("--out", type=Path, default=Path("targets"))
     parser.add_argument("--all", action="store_true", help="generate all three targets")
