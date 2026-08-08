@@ -27,7 +27,8 @@
     "uv_wavelength_nm": "TO RECORD (365 or 395)",
     "lamp_distance_mm": 350,
     "warmup_seconds": 60,
-    "spe_seconds": null
+    "spe_seconds": 810,
+    "spe_note": "read by eye from the 8-zone strip, dry: zones 6, 7 and 8 matched, zone 5 (9:30) still lighter, so the plateau begins at zone 6 = 13:30"
   },
   "lut": {
     "size": 256,
