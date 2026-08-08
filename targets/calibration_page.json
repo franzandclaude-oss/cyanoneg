@@ -1,0 +1,39 @@
+{
+  "generator": "cyanoneg 0.1.0",
+  "target": "calibration_page",
+  "ppi": 360,
+  "working_space": "srgb",
+  "coordinates": "print orientation (pre-flip); film TIFF is mirrored horizontally",
+  "page_mm": [
+    210.0,
+    297.0
+  ],
+  "gap_mm": 20.0,
+  "placement": {
+    "step_wedge": {
+      "x_px": 127,
+      "y_px": 615,
+      "w_px": 2722,
+      "h_px": 1474,
+      "x_mm": 9.0,
+      "y_mm": 43.4,
+      "sidecar": "step_wedge.json"
+    },
+    "blocker_grid": {
+      "x_px": 493,
+      "y_px": 2372,
+      "w_px": 1989,
+      "h_px": 1221,
+      "x_mm": 34.8,
+      "y_mm": 167.4,
+      "sidecar": "blocker_grid.json"
+    }
+  },
+  "blocker_rgb": [
+    255,
+    64,
+    0
+  ],
+  "saturation": 1.0,
+  "usage": "print through linear.json only; coat, expose, wash and dry as one sheet, centred under the lamp. Scan each target separately (or crop one scan) and analyse it with its own per-target sidecar."
+}

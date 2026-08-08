@@ -491,6 +491,94 @@ def step_wedge(
 # --------------------------------------------------------------------------- CLI
 
 
+# --------------------------------------------------------------------------- combined sheet
+
+#: A4 in millimetres. The page exists so the blocker grid and the step wedge can be coated,
+#: exposed, washed and dried as one piece of paper.
+A4_MM = (210.0, 297.0)
+
+
+def calibration_page(
+    blocker_rgb: tuple[int, int, int],
+    saturation: float = 1.0,
+    seed: int = 20260725,
+    gap_mm: float = 20.0,
+    page_mm: tuple[float, float] = A4_MM,
+    **wedge_kwargs,
+) -> Target:
+    """Blocker grid and step wedge on one sheet, stacked and centred.
+
+    Both targets on one piece of paper share a coating pass, an exposure, a wash and a
+    drying — which is the point. Measured sheet-to-sheet variation was 0.19 log units of
+    density range on identical stimuli, dwarfing everything else in the calibration; two
+    targets on separate sheets cannot be combined into one profile without carrying that
+    error. Sharing a sheet removes it by construction.
+
+    What sharing costs is evenness: the two targets sit at different distances from the
+    lamp. Centred on the pair at a 350 mm lamp distance that difference is 0.005 log units
+    between their centres — a fortieth of what it replaces. **Centre the page under the
+    lamp**; the trade only holds while it is centred.
+
+    Each target keeps its own fiducials and its own references, so analysis is unchanged:
+    scan the two halves separately (or crop one scan) and feed each to ``analyze.py`` with
+    its existing per-target sidecar. The page sidecar records where each one sits, in print
+    orientation, so a single scan can also be split programmatically.
+    """
+    grid = blocker_grid()
+    wedge = step_wedge(blocker_rgb, saturation=saturation, seed=seed, **wedge_kwargs)
+
+    # Work in print orientation and mirror once at the end, so the sidecar offsets are
+    # directly comparable with each target's own coordinates.
+    parts = [("step_wedge", wedge), ("blocker_grid", grid)]  # wedge on top
+    page_w, page_h = _mm(page_mm[0]), _mm(page_mm[1])
+    gap = _mm(gap_mm)
+
+    heights = [p.film.shape[0] for _, p in parts]
+    widths = [p.film.shape[1] for _, p in parts]
+    block_w, block_h = max(widths), sum(heights) + gap * (len(parts) - 1)
+    if block_w > page_w or block_h > page_h:
+        raise ValueError(
+            f"targets need {block_w / PPI * 25.4:.0f} x {block_h / PPI * 25.4:.0f} mm but the "
+            f"page is {page_mm[0]:.0f} x {page_mm[1]:.0f} mm"
+        )
+
+    # Paper white is 1.0 in the negative's space: unprinted film, which the paper sees as
+    # full exposure. The page margin is never measured, so its value only has to be legal.
+    canvas = np.ones((page_h, page_w, 3), dtype=np.float32)
+
+    y = (page_h - block_h) // 2
+    placement = {}
+    for name, part in parts:
+        print_view = np.ascontiguousarray(part.film[:, ::-1])  # undo the per-target mirror
+        h, w = print_view.shape[:2]
+        x = (page_w - w) // 2
+        canvas[y : y + h, x : x + w] = print_view
+        placement[name] = {
+            "x_px": int(x),
+            "y_px": int(y),
+            "w_px": int(w),
+            "h_px": int(h),
+            "x_mm": round(x / PPI * 25.4, 1),
+            "y_mm": round(y / PPI * 25.4, 1),
+            "sidecar": f"{name}.json",
+        }
+        y += h + gap
+
+    sidecar = {
+        "page_mm": list(page_mm),
+        "gap_mm": gap_mm,
+        "placement": placement,
+        "blocker_rgb": list(blocker_rgb),
+        "saturation": saturation,
+        "usage": (
+            "print through linear.json only; coat, expose, wash and dry as one sheet, "
+            "centred under the lamp. Scan each target separately (or crop one scan) and "
+            "analyse it with its own per-target sidecar."
+        ),
+    }
+    return _finish("calibration_page", canvas, sidecar)
+
+
 def main(argv: list[str] | None = None) -> int:
     from . import use_utf8_console
 
@@ -502,6 +590,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--grid", action="store_true")
     parser.add_argument("--zone-grid", action="store_true", help="hue sweep per density zone (phase 3)")
     parser.add_argument("--wedge", action="store_true")
+    parser.add_argument(
+        "--page",
+        action="store_true",
+        help="blocker grid and step wedge on one A4 sheet, so both share a coating and a wash",
+    )
     parser.add_argument(
         "--blocker",
         type=str,
@@ -546,8 +639,20 @@ def main(argv: list[str] | None = None) -> int:
                 redundancy=args.redundancy,
             )
         )
+    if args.page:
+        wanted.append(
+            calibration_page(
+                rgb,
+                saturation=args.saturation,
+                seed=args.seed,
+                levels=args.levels,
+                redundancy=args.redundancy,
+            )
+        )
     if not wanted:
-        parser.error("nothing to do: pass --all or one of --exposure/--grid/--zone-grid/--wedge")
+        parser.error(
+            "nothing to do: pass --all or one of --exposure/--grid/--zone-grid/--wedge/--page"
+        )
 
     for target in wanted:
         tif, side = target.save(args.out)

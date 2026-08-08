@@ -8,12 +8,24 @@ import pytest
 
 from cyanoneg.blocker import apply_blocker
 from cyanoneg.imageio import load_image
-from cyanoneg.targets import PPI, blocker_grid, exposure_strip, step_wedge
+from cyanoneg.targets import (
+    A4_MM,
+    PPI,
+    blocker_grid,
+    calibration_page,
+    exposure_strip,
+    step_wedge,
+)
 
 
 @pytest.fixture(scope="module")
 def wedge():
     return step_wedge((255, 0, 0), saturation=1.0, seed=123)
+
+
+@pytest.fixture(scope="module")
+def page():
+    return calibration_page((255, 64, 0), saturation=1.0, seed=123)
 
 
 class TestStepWedge:
@@ -160,3 +172,62 @@ class TestRealChart:
         # …and off-grid (label) pixels are a rejectable sliver, not a real signal.
         off_grid_fraction = counts[~on_grid].sum() / grey.size
         assert 0 < off_grid_fraction < 0.01
+
+
+class TestCalibrationPage:
+    """Both targets on one sheet, so they share a coating pass and a wash.
+
+    The whole reason the page exists is that sheet-to-sheet variation measured 0.19 log
+    units of density range on identical stimuli. If composition altered either target even
+    slightly, the page would trade that error for a subtler one, so the tests below check
+    the pixels rather than just the geometry.
+    """
+
+    def test_page_is_a4_at_print_resolution(self, page):
+        h, w = page.film.shape[:2]
+        assert w == round(A4_MM[0] / 25.4 * PPI)
+        assert h == round(A4_MM[1] / 25.4 * PPI)
+
+    @pytest.mark.parametrize("name", ["step_wedge", "blocker_grid"])
+    def test_each_target_survives_composition_bit_exactly(self, page, name):
+        """Crop the target back out of the page; it must equal the standalone target.
+
+        Catches an off-by-one in placement, a lost mirror, or resampling — none of which
+        would be visible in the sidecar but all of which would corrupt the measurement.
+        """
+        standalone = {"step_wedge": step_wedge((255, 64, 0), saturation=1.0, seed=123),
+                      "blocker_grid": blocker_grid()}[name]
+        expected = standalone.film[:, ::-1]  # print orientation
+
+        p = page.sidecar["placement"][name]
+        page_print = page.film[:, ::-1]
+        got = page_print[p["y_px"] : p["y_px"] + p["h_px"], p["x_px"] : p["x_px"] + p["w_px"]]
+        assert np.array_equal(got, expected)
+
+    def test_targets_do_not_overlap_and_sit_inside_the_page(self, page):
+        h, w = page.film.shape[:2]
+        boxes = []
+        for p in page.sidecar["placement"].values():
+            assert p["x_px"] >= 0 and p["y_px"] >= 0
+            assert p["x_px"] + p["w_px"] <= w
+            assert p["y_px"] + p["h_px"] <= h
+            boxes.append((p["y_px"], p["y_px"] + p["h_px"]))
+        (a0, a1), (b0, b1) = sorted(boxes)
+        assert a1 <= b0, "targets overlap vertically"
+
+    def test_targets_are_horizontally_centred(self, page):
+        """Centring is what keeps the lamp fall-off difference at 0.005 log units."""
+        w = page.film.shape[1]
+        for p in page.sidecar["placement"].values():
+            left, right = p["x_px"], w - (p["x_px"] + p["w_px"])
+            assert abs(left - right) <= 1
+
+    def test_refuses_a_page_too_small_to_hold_them(self):
+        with pytest.raises(ValueError, match="page is"):
+            calibration_page((255, 64, 0), page_mm=(100.0, 150.0))
+
+    def test_sidecar_points_at_the_per_target_sidecars(self, page):
+        """Analysis is unchanged: each half is read with its own existing sidecar."""
+        names = page.sidecar["placement"]
+        assert names["step_wedge"]["sidecar"] == "step_wedge.json"
+        assert names["blocker_grid"]["sidecar"] == "blocker_grid.json"
