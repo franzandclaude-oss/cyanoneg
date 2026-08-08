@@ -123,7 +123,7 @@ class TestWedgeAnalysis:
     def test_ink_spike_flagged_and_suppressed(self, wedge, tmp_path):
         """Corrupt one copy of one level; the flag must fire and the redundant copy
         must keep the curve on track."""
-        corrupted_level = 128
+        corrupted_level = wedge.sidecar["levels"] // 2  # a midtone, whatever the design
         printed = render_print(wedge, process_response)
         victim = next(c for c in wedge.sidecar["cells"] if c["value"] == corrupted_level)
         printed[

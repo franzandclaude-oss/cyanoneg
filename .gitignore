@@ -28,7 +28,7 @@ EDN_RGB_256_2.tif
 # the conclusion: the profile records the measured blocker, the density range, the scan
 # settings and the filename it came from. If the analysis maths is ever revised and the
 # raw sheets are wanted again, they have to have been archived outside git.
-Blocker*.tif
-Wedge*.tif
-Exposure*.tif
+*Blocker*.tif
+*Wedge*.tif
+*Exposure*.tif
 *_scan.tif

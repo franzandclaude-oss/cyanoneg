@@ -361,21 +361,68 @@ def zone_blocker_grid(
     return _finish("zone_grid", canvas, sidecar)
 
 
-# --------------------------------------------------------------------------- 256-step wedge
+# --------------------------------------------------------------------------- step wedge
+
+#: Levels and copies for the wedge. Deliberately few levels, heavily replicated.
+#:
+#: The first build used 256 levels with 2 copies, following PLAN.md. On real paper two
+#: copies of one level, printed at different places on a hand-coated sheet, disagreed by a
+#: median of ~1.0 L*, while 256 levels across a ~58 L* scale puts neighbouring levels only
+#: 0.23 L* apart. Raw per-level readings were therefore mostly noise: the measured response
+#: reversed direction 117 times and 50 levels tripped the spike detector on a print with
+#: nothing physically wrong with it.
+#:
+#: **This does not much affect the derived curve**, and it is worth being precise about
+#: that. ``lut.derive_correction`` fits 21 PCHIP knots regardless of how many points it is
+#: given, so it was already averaging that noise away. Re-binning the measured 256x2 sheets
+#: into 32x16 moves the resulting LUT by a mean of 0.006 and a worst case of 0.045 — real,
+#: but not the difference between a working calibration and a broken one.
+#:
+#: What the redesign actually buys, which is why it is still the default:
+#:  - Spike detection becomes meaningful. At k=2 a flag means "two noisy readings differ",
+#:    which fired on a fifth of all levels and told you nothing. At k=16 an outlier is
+#:    visible against 15 siblings, so a flag implicates the print.
+#:  - The density-range references stop resting on two patches each.
+#:  - Nothing is spent asking the process for precision it cannot deliver.
+#:
+#: 21-step tablets have been the alt-process convention for decades for the same reasons.
+DEFAULT_LEVELS = 32
+DEFAULT_REDUNDANCY = 16
+
+
+def _grid_shape(count: int, target_aspect: float = 2.0) -> tuple[int, int]:
+    """Columns and rows for ``count`` patches, closest to ``target_aspect`` (width:height).
+
+    Only exact factorisations are considered, so every level keeps the same number of
+    copies and the grid has no gaps.
+    """
+    best = None
+    for cols in range(1, count + 1):
+        if count % cols:
+            continue
+        rows = count // cols
+        score = abs((cols / rows) - target_aspect)
+        if best is None or score < best[0]:
+            best = (score, cols, rows)
+    assert best is not None
+    return best[1], best[2]
 
 
 def step_wedge(
     blocker_rgb: tuple[int, int, int],
     saturation: float = 1.0,
     seed: int = 20260725,
-    redundancy: int = 2,
+    redundancy: int = DEFAULT_REDUNDANCY,
+    levels: int = DEFAULT_LEVELS,
     patch_mm: float = 5.5,
     border_mm: float = 8.0,
 ) -> Target:
-    """Randomised 256-step tablet with anti-spike redundancy.
+    """Randomised step tablet with anti-spike redundancy.
 
-    - 256 levels × ``redundancy`` copies, positions shuffled by a recorded seed, so an ink
-      spike corrupts one copy of one level, not a run of neighbours; copies are averaged.
+    - ``levels`` levels × ``redundancy`` copies, positions shuffled by a recorded seed, so
+      an ink spike corrupts one copy of one level rather than a run of neighbours, and so
+      the copies of a level sample different parts of the sheet. Copies are averaged, which
+      is what converts coating variation from a bias into a shrinking error term.
     - A thick **full-blocker border**: on the print this edge stays unexposed and washes
       out, absorbing the lateral chemistry migration (edge-etch/peptization) that would
       otherwise corrupt edge patches.
@@ -384,17 +431,21 @@ def step_wedge(
 
     The wedge is generated in the measured blocker colour: calibration must exercise the
     same colours a real negative uses.
+
+    See :data:`DEFAULT_LEVELS` for why the defaults favour few levels and many copies.
     """
-    count = 256 * redundancy
-    cols = 32
-    rows = count // cols
-    if cols * rows != count:
-        raise ValueError(f"patch count {count} does not fill a {cols}-wide grid")
+    if levels < 2:
+        raise ValueError(f"levels must be at least 2, got {levels}")
+    if redundancy < 1:
+        raise ValueError(f"redundancy must be at least 1, got {redundancy}")
+
+    count = levels * redundancy
+    cols, rows = _grid_shape(count)
 
     patch, border = _mm(patch_mm), _mm(border_mm)
 
     rng = np.random.default_rng(seed)
-    values = np.repeat(np.arange(256), redundancy)
+    values = np.repeat(np.arange(levels), redundancy)
     rng.shuffle(values)
 
     # Mono negative patch area; the dense border comes from apply_frame.
@@ -404,7 +455,7 @@ def step_wedge(
         r, c = divmod(i, cols)
         y, x = r * patch, c * patch
         # Patch value is the *positive* input level; the negative is its inversion.
-        n[y : y + patch, x : x + patch] = 1.0 - value / 255.0
+        n[y : y + patch, x : x + patch] = 1.0 - value / (levels - 1)
         cells.append(
             {
                 "index": i,
@@ -424,7 +475,7 @@ def step_wedge(
     sidecar = {
         "seed": seed,
         "redundancy": redundancy,
-        "levels": 256,
+        "levels": levels,
         "grid": {"cols": cols, "rows": rows},
         "patch_mm": patch_mm,
         "border_mm": border_mm,
@@ -459,6 +510,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--saturation", type=float, default=1.0, help="wedge blocker saturation")
     parser.add_argument("--seed", type=int, default=20260725, help="wedge randomisation seed")
+    parser.add_argument(
+        "--levels",
+        type=int,
+        default=DEFAULT_LEVELS,
+        help=f"wedge tone levels (default {DEFAULT_LEVELS}); more levels means finer steps "
+        "but fewer copies of each to average coating variation out of",
+    )
+    parser.add_argument(
+        "--redundancy",
+        type=int,
+        default=DEFAULT_REDUNDANCY,
+        help=f"copies of each wedge level (default {DEFAULT_REDUNDANCY})",
+    )
     args = parser.parse_args(argv)
 
     rgb = tuple(int(v) for v in args.blocker.split(","))
@@ -473,7 +537,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.zone_grid:  # not in --all: only needed when upgrading to the zone model
         wanted.append(zone_blocker_grid())
     if args.all or args.wedge:
-        wanted.append(step_wedge(rgb, saturation=args.saturation, seed=args.seed))
+        wanted.append(
+            step_wedge(
+                rgb,
+                saturation=args.saturation,
+                seed=args.seed,
+                levels=args.levels,
+                redundancy=args.redundancy,
+            )
+        )
     if not wanted:
         parser.error("nothing to do: pass --all or one of --exposure/--grid/--zone-grid/--wedge")
 

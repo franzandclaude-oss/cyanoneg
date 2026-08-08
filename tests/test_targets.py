@@ -1,6 +1,7 @@
 """Target geometry and sidecar integrity, plus the real-chart parse."""
 
 import json
+import math
 
 import numpy as np
 import pytest
@@ -18,10 +19,45 @@ def wedge():
 class TestStepWedge:
 
     def test_covers_all_levels_with_redundancy(self, wedge):
+        levels, k = wedge.sidecar["levels"], wedge.sidecar["redundancy"]
         values = [c["value"] for c in wedge.sidecar["cells"]]
-        assert len(values) == 512
-        assert sorted(set(values)) == list(range(256))
-        assert all(values.count(v) == 2 for v in range(256))
+        assert len(values) == levels * k
+        assert sorted(set(values)) == list(range(levels))
+        assert all(values.count(v) == k for v in range(levels))
+
+    def test_defaults_favour_copies_over_levels(self, wedge):
+        """Each level must be resolvable above the sheet's own coating variation.
+
+        Hand-coated paper delivered ~1.0 L* of variation between two patches of the same
+        level in different places on one sheet, so a single patch carries ~0.69 L* of
+        noise. Averaging k copies cuts that by sqrt(k), and the per-level step has to clear
+        what remains — otherwise a spike flag means "two noisy readings differ" rather than
+        "this print has a defect", which is what happened at 256 x 2.
+
+        Note this is about the *readings*, not the final curve: derive_correction fits 21
+        knots either way and smooths most of it out regardless.
+        """
+        assert wedge.sidecar["levels"] == 32
+        assert wedge.sidecar["redundancy"] == 16
+
+        scale_lstar = 58.0  # measured span, max black to paper white, on Paper 1
+        single_patch_sigma = 0.69  # measured, from duplicate-pair disagreement
+        step = scale_lstar / (wedge.sidecar["levels"] - 1)
+        noise = single_patch_sigma / math.sqrt(wedge.sidecar["redundancy"])
+        assert step / noise > 8.0
+
+    @pytest.mark.parametrize("levels,k", [(21, 24), (32, 16), (64, 8), (256, 2)])
+    def test_any_level_and_copy_count_fills_a_gapless_grid(self, levels, k):
+        """Every level keeps the same number of copies and the grid has no holes."""
+        s = step_wedge((255, 0, 0), levels=levels, redundancy=k).sidecar
+        cols, rows = s["grid"]["cols"], s["grid"]["rows"]
+        assert cols * rows == levels * k == len(s["cells"])
+        assert sorted(c["value"] for c in s["cells"]) == sorted(list(range(levels)) * k)
+
+    @pytest.mark.parametrize("bad", [{"levels": 1}, {"redundancy": 0}])
+    def test_degenerate_designs_are_refused(self, bad):
+        with pytest.raises(ValueError):
+            step_wedge((255, 0, 0), **bad)
 
     def test_randomised_not_sequential(self, wedge):
         values = [c["value"] for c in wedge.sidecar["cells"]]
@@ -44,8 +80,9 @@ class TestStepWedge:
             y, x = cell["y_px"], cell["x_px"]
             h, w = cell["h_px"], cell["w_px"]
             sample = print_view[y + h // 2 - 3 : y + h // 2 + 4, x + w // 2 - 3 : x + w // 2 + 4]
+            top = wedge.sidecar["levels"] - 1
             expected = apply_blocker(
-                np.array([[1.0 - cell["value"] / 255.0]], dtype=np.float32), rgb, 1.0
+                np.array([[1.0 - cell["value"] / top]], dtype=np.float32), rgb, 1.0
             )[0, 0]
             assert np.abs(sample.mean(axis=(0, 1)) - expected).max() < 1 / 255
 

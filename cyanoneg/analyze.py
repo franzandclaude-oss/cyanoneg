@@ -333,7 +333,7 @@ def sample_cells(scan: Image, sidecar: dict, frame: Frame, quantity: str = "lsta
 @dataclass
 class WedgeAnalysis:
     lut: Lut
-    measured_in: np.ndarray  # 256 values in [0, 1]
+    measured_in: np.ndarray  # one value in [0, 1] per wedge level
     measured_out: np.ndarray  # normalised response, 0 = paper white, 1 = max black
     density_range: float
     spikes: list[dict]
