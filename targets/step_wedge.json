@@ -15,7 +15,7 @@
   "border_mm": 8.0,
   "blocker_rgb": [
     255,
-    0,
+    64,
     0
   ],
   "saturation": 1.0,

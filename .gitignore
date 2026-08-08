@@ -20,3 +20,15 @@ targets/*.tiff
 out/
 *_negative.tif
 EDN_RGB_256_2.tif
+
+# Scans of calibration prints. Tens of MB each and one per calibration sheet.
+#
+# Unlike everything else here these are *not* reproducible — they are measurements of a
+# physical print, and once deleted the numbers cannot be re-derived. What gets tracked is
+# the conclusion: the profile records the measured blocker, the density range, the scan
+# settings and the filename it came from. If the analysis maths is ever revised and the
+# raw sheets are wanted again, they have to have been archived outside git.
+Blocker*.tif
+Wedge*.tif
+Exposure*.tif
+*_scan.tif

@@ -17,7 +17,7 @@
     "model": "fixed_hue",
     "rgb": [
       255,
-      0,
+      64,
       0
     ],
     "saturation": 1.0
@@ -294,6 +294,15 @@
   "measurements": {
     "raw_patches": [],
     "scan_date": null,
-    "note": "Identity LUT by construction, not measurement. All calibration targets print through this profile so measurements capture the process alone. Blocker red is a deliberate placeholder pending the HSB grid reading."
+    "note": "Identity LUT by construction, not measurement. All calibration targets print through this profile so measurements capture the process alone. Blocker red is a deliberate placeholder pending the HSB grid reading.",
+    "blocker_note": "measured from the HSB grid printed at SPE 13:30 and scanned 16-bit sRGB: hue 15 deg won at L* 96.35 (DR 1.193) against solid black ink at L* 93.73 (DR 1.162), confirming colour inks block UV better than composite black on this paper. Saturation 1.0 rather than the 0.9 the analysis recommends: its rule saves ink when DR has headroom, and at 1.193 this sits on the floor of the 1.2-1.4 window. The top four grid entries span 0.64 L* against ~1.0 L* within-patch noise, so hue 0 vs 15 and sat 0.9 vs 1.0 are a tie; the 4.4 L* gap to hue 30 is real, so the winning cluster is trustworthy even though the winner inside it is not.",
+    "blocker_scan": "BlockerGrid1330 (2).tif"
+  },
+  "scan_settings": {
+    "device": "Epson Perfection V600",
+    "colour_space": "sRGB IEC61966-2.1",
+    "bit_depth": 16,
+    "ppi": 300,
+    "auto_corrections": "all off - auto exposure/tone/backlight rescale each sheet independently"
   }
 }

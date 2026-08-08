@@ -97,8 +97,31 @@ class TestShippedProfiles:
 
     def test_paper1_provisional(self):
         profile = Profile.load(PROFILE_DIR / "paper1-provisional.json")
-        assert profile.provisional
         assert profile.lut.is_identity()
-        assert not profile.is_ready_to_print  # blocker awaits the HSB grid reading
         assert profile.film == "Film 1"
         assert profile.paper == "Paper 1"
+
+    def test_provisional_tracks_the_curve_not_the_blocker(self):
+        """Paper 1 can print while still being provisional, and the two must not be conflated.
+
+        The HSB grid has been read, so the blocker is measured and the profile is usable.
+        The tone curve has not, so the LUT is still identity and the tones are a starting
+        point rather than a calibration. Before the grid was read this test asserted the
+        opposite — that the profile could *not* print — which is a state the repo has now
+        left behind.
+        """
+        profile = Profile.load(PROFILE_DIR / "paper1-provisional.json")
+        assert profile.is_ready_to_print  # blocker measured
+        assert profile.provisional  # curve not
+        assert profile.lut.is_identity()
+
+    def test_shipped_blockers_are_no_longer_the_placeholder(self):
+        """(255, 0, 0) was a stand-in until the grid was measured; nothing should still use it.
+
+        A profile silently carrying the placeholder would print, and print plausibly, while
+        blocking UV worse than the measured hue — the kind of wrong that looks fine.
+        """
+        for name in ("linear", "paper1-provisional"):
+            blocker = Profile.load(PROFILE_DIR / f"{name}.json").blocker
+            assert tuple(blocker["rgb"]) != (255, 0, 0), f"{name} still holds the placeholder"
+            assert blocker["model"] == "fixed_hue"
