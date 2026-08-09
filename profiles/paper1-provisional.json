@@ -24,7 +24,7 @@
   },
   "exposure": {
     "uv_source": "100W UV LED in light box",
-    "uv_wavelength_nm": "unknown - lamp is unlabelled beyond 'UV-A' (315-400nm), which covers both 365 and 395. Likely 395: general-purpose 100W AC flood, and 365 costs more so is always advertised. Not measured, so not to be quoted as one. Settle it with the paper-fluorescence test before replacing the lamp - a swap to a different wavelength invalidates spe_seconds.",
+    "uv_wavelength_nm": "390-400 (from the lamp's own marking, read 2026-08-09). Recorded as the stated range rather than collapsed to 395, because that is what is actually known. Cyanotype absorbs more strongly nearer 365, so this lamp does less work per watt - consistent with an SPE of 13:30 at 350mm. A replacement lamp at a different wavelength invalidates spe_seconds.",
     "lamp_distance_mm": 350,
     "warmup_seconds": 60,
     "spe_seconds": 810,
