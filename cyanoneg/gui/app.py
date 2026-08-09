@@ -53,17 +53,20 @@ from ..targets import blocker_grid, exposure_strip, step_wedge
 from . import theme
 
 
-def output_for_source(source: str | Path, current: str = "") -> str:
-    """Where the negative for `source` should go, keeping any folder already chosen.
+def output_for_source(source: str | Path, chosen: str = "") -> str:
+    """Where the negative for `source` should go.
 
-    The name is always derived from the source image, so processing a second picture
-    cannot silently overwrite the first one's negative. If Steven has picked a
-    destination by hand, that folder is kept and only the filename follows the source —
-    a name meant for one image should not carry over to another.
+    The filename always comes from the source image, so processing a second picture
+    cannot silently overwrite the first one's negative.
+
+    ``chosen`` is a destination Steven picked or typed himself, and *only* then is its
+    folder kept — a name meant for one image should not carry over to another, but a
+    folder he deliberately chose should. Without one the negative lands beside its own
+    source, so images from different folders do not all pile into the first one's.
     """
     source = Path(source)
     name = source.stem + "_negative.tif"
-    return str(Path(current).with_name(name) if current else source.with_name(name))
+    return str(Path(chosen).with_name(name) if chosen else source.with_name(name))
 
 
 class App:
@@ -241,6 +244,13 @@ class App:
 
         holder = self._form_row(output_box, "Save to", 2)
         self.output_var = StringVar()
+        # Anything in the box that this app did not put there was chosen by Steven, and
+        # his folder is then kept as the source changes. Without this distinction an
+        # auto-derived folder looks identical to a chosen one, and every negative ends up
+        # in whichever folder the first image happened to live in.
+        self._auto_output = ""  # the last value written here by the app itself
+        self._chosen_output = ""  # a destination picked with … or typed by hand
+        self.output_var.trace_add("write", self._note_output_edited)
         ttk.Entry(holder, textvariable=self.output_var, width=theme.FIELD_WIDTH).pack(side=LEFT)
         ttk.Button(holder, text="…", width=3, style="Small.TButton", command=self._pick_output).pack(
             side=LEFT, padx=(theme.GAP, 0)
@@ -288,14 +298,31 @@ class App:
         )
         if path:
             self.source_var.set(path)
-            self.output_var.set(output_for_source(path, self.output_var.get()))
+            self._set_output(output_for_source(path, self._chosen_output))
+
+    def _set_output(self, value: str) -> None:
+        """Write the box ourselves, without it counting as Steven's own choice."""
+        self._auto_output = value
+        self.output_var.set(value)
+
+    def _note_output_edited(self, *_) -> None:
+        value = self.output_var.get()
+        if value and value != self._auto_output:
+            self._chosen_output = value
 
     def _pick_output(self) -> None:
+        current = self.output_var.get().strip()
+        where = {}
+        if current:  # open the dialog where the box already points, not at the last cwd
+            where = {"initialdir": str(Path(current).parent), "initialfile": Path(current).name}
         path = filedialog.asksaveasfilename(
-            title="Save negative as", defaultextension=".tif", filetypes=[("TIFF", "*.tif")]
+            title="Save negative as",
+            defaultextension=".tif",
+            filetypes=[("TIFF", "*.tif")],
+            **where,
         )
         if path:
-            self.output_var.set(path)
+            self.output_var.set(path)  # traced, so this counts as Steven's own choice
 
     def _on_profile_selected(self) -> None:
         profile = self._current_profile()
