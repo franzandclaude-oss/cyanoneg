@@ -52,6 +52,7 @@ from ..proof import can_proof, soft_proof
 from ..profiles import PROFILE_DIR, Profile, list_profiles
 from ..targets import blocker_grid, exposure_strip, step_wedge
 from . import theme
+from .scroll import ScrollableFrame
 
 
 def output_for_source(source: str | Path, chosen: str = "") -> str:
@@ -82,14 +83,20 @@ class App:
 
         notebook = ttk.Notebook(root)
         notebook.pack(fill=BOTH, expand=True)
-        self.process_tab = ttk.Frame(notebook, padding=theme.PAD)
-        self.profiles_tab = ttk.Frame(notebook, padding=theme.PAD)
-        self.calibrate_tab = ttk.Frame(notebook, padding=theme.PAD)
-        self.batch_tab = ttk.Frame(notebook, padding=theme.PAD)
-        notebook.add(self.process_tab, text="Process")
-        notebook.add(self.profiles_tab, text="Profiles")
-        notebook.add(self.calibrate_tab, text="Calibrate")
-        notebook.add(self.batch_tab, text="Batch")
+        # Scrollable bodies: on a short display the tabs need more height than exists, and
+        # a clipped tab hides its bottom row of buttons with nothing to say they are there.
+        # Costs nothing on a tall one — the body stretches to fill when there is room.
+        self.scrollers = {}
+        for attr, label in (
+            ("process_tab", "Process"),
+            ("profiles_tab", "Profiles"),
+            ("calibrate_tab", "Calibrate"),
+            ("batch_tab", "Batch"),
+        ):
+            scroller = ScrollableFrame(notebook, padding=theme.PAD)
+            notebook.add(scroller, text=label)
+            self.scrollers[attr] = scroller
+            setattr(self, attr, scroller.body)
 
         self._build_process_tab()
         self._build_profiles_tab()

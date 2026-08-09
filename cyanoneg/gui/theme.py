@@ -72,19 +72,33 @@ PREVIEW_MAX = 460
 CURVE_SIZE = 190
 
 #: Preferred size, and the smallest the layout stays usable at. Both are clamped to the
-#: actual display in :func:`apply` — a window taller than the screen silently hides its
-#: bottom row of controls, and no amount of styling makes that acceptable.
+#: display in :func:`apply`. Content that outgrows the window scrolls rather than being
+#: cut off — see :mod:`cyanoneg.gui.scroll` — but the window should still open as large as
+#: the desktop allows, so scrolling stays a fallback rather than the normal experience.
 PREFERRED_WINDOW = (1240, 820)
-MIN_WINDOW = (1060, 620)
-SCREEN_MARGIN = 80  # leave room for the taskbar and window chrome
+MIN_WINDOW = (900, 480)
+EDGE = 8  # breathing room against the work-area edge
+
+
+def window_size(root) -> tuple[int, int, int, int]:
+    """Preferred geometry as (width, height, x, y), fitted to the usable desktop.
+
+    Sized from ``wm_maxsize`` rather than the raw screen dimensions: that is the work
+    area, so it already excludes the taskbar. The previous fixed 80px margin guessed at
+    the same thing and guessed 60px too small on a 1280x720 display, which cost exactly
+    the strip of window the Process tab's buttons needed.
+    """
+    max_w, max_h = root.wm_maxsize()
+    width = max(1, min(PREFERRED_WINDOW[0], max_w - EDGE))
+    height = max(1, min(PREFERRED_WINDOW[1], max_h - EDGE))
+    screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
+    return width, height, max(0, (screen_w - width) // 2), max(0, (screen_h - height) // 2)
 
 
 def apply(root) -> None:
     """Apply the theme to a freshly created root window, sized to fit the display."""
-    screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
-    width = min(PREFERRED_WINDOW[0], screen_w - SCREEN_MARGIN)
-    height = min(PREFERRED_WINDOW[1], screen_h - SCREEN_MARGIN)
-    root.geometry(f"{width}x{height}+{max(0, (screen_w - width) // 2)}+{max(0, (screen_h - height) // 2 - 20)}")
+    width, height, x, y = window_size(root)
+    root.geometry(f"{width}x{height}+{x}+{y}")
     root.minsize(min(MIN_WINDOW[0], width), min(MIN_WINDOW[1], height))
     root.configure(background=BG)
 
