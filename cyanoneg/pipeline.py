@@ -85,6 +85,7 @@ def step_apply_lut(image: Image, profile: Profile) -> Image:
         space=profile.working_space,
         ppi=image.ppi,
         bit_depth=image.bit_depth,
+        converted_from=image.converted_from,
     )
 
 
@@ -101,7 +102,13 @@ def step_resize(image: Image, size: PrintSize, ppi: float, auto_orient: bool = T
     pil = PILImage.fromarray(linear.astype(np.float32), mode="F")
     resized = np.asarray(pil.resize(dst, PILImage.Resampling.LANCZOS), dtype=np.float32)
     encoded = cio.from_linear(np.clip(resized, 0.0, 1.0), image.space)
-    return Image(data=encoded, space=image.space, ppi=ppi, bit_depth=image.bit_depth)
+    return Image(
+        data=encoded,
+        space=image.space,
+        ppi=ppi,
+        bit_depth=image.bit_depth,
+        converted_from=image.converted_from,
+    )
 
 
 def step_invert(image: Image) -> Image:

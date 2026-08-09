@@ -67,18 +67,16 @@ class TestOutputPath:
 
 
 @pytest.fixture
-def app():
+def app(tk_root):
     """A real, hidden App. The rules above are only correct if the window wires them up."""
-    tk = pytest.importorskip("tkinter")
+    import tkinter as tk
+
+    window = tk.Toplevel(tk_root)
+    window.withdraw()
     try:
-        root = tk.Tk()
-    except tk.TclError as e:  # no display
-        pytest.skip(str(e))
-    root.withdraw()
-    try:
-        yield App(root)
+        yield App(window)
     finally:
-        root.destroy()
+        window.destroy()
 
 
 class TestTheBoxTracksTheSource:

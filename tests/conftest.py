@@ -24,3 +24,21 @@ def chart_path() -> Path:
     if not CHART.exists():
         pytest.skip("EDN_RGB_256.tif not present")
     return CHART
+
+
+@pytest.fixture(scope="session")
+def tk_root():
+    """One Tk root for the whole run.
+
+    Creating and destroying a root per test made Tk fail to initialise every few runs,
+    which the GUI fixtures then turned into a skip — and a test that skips at random is a
+    test that silently stops guarding anything. Tests get a Toplevel off this instead.
+    """
+    tk = pytest.importorskip("tkinter")
+    try:
+        root = tk.Tk()
+    except tk.TclError as e:  # genuinely no display
+        pytest.skip(str(e))
+    root.withdraw()
+    yield root
+    root.destroy()

@@ -16,6 +16,7 @@ proof of the predicted print, the latter only where the profile carries measurem
 from __future__ import annotations
 
 import queue
+import subprocess
 import threading
 import traceback
 from pathlib import Path
@@ -140,7 +141,31 @@ class App:
         holder.grid(row=row, column=1, sticky=W + E, pady=theme.ROW_GAP)
         return holder
 
+    def _tracked(self, name: str, value: str = "") -> StringVar:
+        """Create a Process-tab input and enter it into the staleness fingerprint.
+
+        Every control that changes the negative's pixels goes through here. That is the
+        whole defence: a negative is only saveable while the fingerprint still matches the
+        one taken when it was rendered, so an input that is not registered would let a
+        stale negative be written under settings that no longer produced it — a wrong file
+        that looks entirely right. ``tests/test_gui_process.py`` walks the tab's widgets and
+        fails if any variable escaped this method.
+        """
+        var = StringVar(value=value)
+        self._fingerprint_vars[name] = var
+        return var
+
+    def _settings_fingerprint(self) -> tuple:
+        return tuple(sorted((name, var.get()) for name, var in self._fingerprint_vars.items()))
+
     def _build_process_tab(self) -> None:
+        self._fingerprint_vars: dict[str, StringVar] = {}
+        self._source_image: Image | None = None
+        self._source_loaded_key: tuple[str, str] | None = None
+        self._last_negative: Image | None = None
+        self._rendered_fingerprint: tuple | None = None
+        self._saved_path: Path | None = None
+
         tab = self.process_tab
         left = ttk.Frame(tab)
         left.pack(side=LEFT, fill=BOTH, expand=False, padx=(0, theme.WIDE_GAP))
@@ -151,8 +176,9 @@ class App:
         header = ttk.Frame(right)
         header.pack(fill=X)
         ttk.Label(header, text="Preview", style="Heading.TLabel").pack(side=LEFT)
-        self.preview_mode = StringVar(value="film")
-        for value, label in (("proof", "Soft proof"), ("film", "Film (mirrored)")):
+        # Not tracked: which view is on screen cannot change the negative.
+        self.preview_mode = StringVar(value="source")
+        for value, label in (("proof", "Soft proof"), ("film", "Film (mirrored)"), ("source", "Source")):
             ttk.Radiobutton(
                 header, text=label, value=value, variable=self.preview_mode, command=self._redraw_preview
             ).pack(side=RIGHT, padx=(theme.WIDE_GAP, 0))
@@ -175,29 +201,40 @@ class App:
         source_box.columnconfigure(1, weight=1)
 
         holder = self._form_row(source_box, "Positive scan", 0)
-        self.source_var = StringVar()
-        ttk.Entry(holder, textvariable=self.source_var, width=theme.FIELD_WIDTH).pack(side=LEFT)
+        self.source_var = self._tracked("source_var")
+        entry = ttk.Entry(holder, textvariable=self.source_var, width=theme.FIELD_WIDTH)
+        entry.pack(side=LEFT)
+        # A typed path is only worth opening once it is finished being typed.
+        entry.bind("<Return>", lambda _e: self._load_source_preview())
+        entry.bind("<FocusOut>", lambda _e: self._load_source_preview())
         ttk.Button(holder, text="…", width=3, style="Small.TButton", command=self._pick_source).pack(
             side=LEFT, padx=(theme.GAP, 0)
         )
 
         holder = self._form_row(source_box, "Colour space", 1)
-        self.space_var = StringVar(value="auto")
-        ttk.Combobox(
+        self.space_var = self._tracked("space_var", "auto")
+        space_box = ttk.Combobox(
             holder, textvariable=self.space_var, values=("auto", *cio.SPACES), state="readonly", width=12
-        ).pack(side=LEFT)
+        )
+        space_box.pack(side=LEFT)
+        # Changing how the numbers are interpreted changes the picture, so re-open it.
+        space_box.bind("<<ComboboxSelected>>", lambda _e: self._load_source_preview())
 
-        self.raw_var = StringVar(value="0")
+        self.source_note = ttk.Label(source_box, text="", style="Mono.TLabel", wraplength=380)
+        self.source_note.grid(row=2, column=0, columnspan=2, sticky=W)
+        self.source_note.grid_remove()
+
+        self.raw_var = self._tracked("raw_var", "0")
         ttk.Checkbutton(
             source_box,
             text="Raw scan (un-inverted negative)",
             variable=self.raw_var,
             onvalue="1",
             offvalue="0",
-        ).grid(row=2, column=1, sticky=W)
+        ).grid(row=3, column=1, sticky=W)
 
-        holder = self._form_row(source_box, "Channel weights", 3)
-        self.weights_var = StringVar(value=",".join(str(w) for w in DEFAULT_WEIGHTS))
+        holder = self._form_row(source_box, "Channel weights", 4)
+        self.weights_var = self._tracked("weights_var", ",".join(str(w) for w in DEFAULT_WEIGHTS))
         ttk.Entry(holder, textvariable=self.weights_var, width=14).pack(side=LEFT)
         ttk.Button(holder, text="Analyse noise", style="Small.TButton", command=self._analyse_noise).pack(
             side=LEFT, padx=(theme.GAP, 0)
@@ -209,7 +246,7 @@ class App:
         profile_box.columnconfigure(1, weight=1)
 
         holder = self._form_row(profile_box, "Paper profile", 0)
-        self.profile_var = StringVar()
+        self.profile_var = self._tracked("profile_var")
         self.profile_box = ttk.Combobox(holder, textvariable=self.profile_var, state="readonly", width=30)
         self.profile_box.pack(side=LEFT)
         self.profile_box.bind("<<ComboboxSelected>>", lambda _e: self._on_profile_selected())
@@ -224,16 +261,17 @@ class App:
         output_box.columnconfigure(1, weight=1)
 
         holder = self._form_row(output_box, "Print size (mm)", 0)
-        self.width_var, self.height_var = StringVar(value="240"), StringVar(value="180")
+        self.width_var = self._tracked("width_var", "240")
+        self.height_var = self._tracked("height_var", "180")
         ttk.Entry(holder, textvariable=self.width_var, width=theme.NARROW_WIDTH).pack(side=LEFT)
         ttk.Label(holder, text="×").pack(side=LEFT, padx=theme.GAP)
         ttk.Entry(holder, textvariable=self.height_var, width=theme.NARROW_WIDTH).pack(side=LEFT)
         ttk.Label(holder, text="at").pack(side=LEFT, padx=theme.GAP)
-        self.ppi_var = StringVar(value=str(DEFAULT_OUTPUT_PPI))
+        self.ppi_var = self._tracked("ppi_var", str(DEFAULT_OUTPUT_PPI))
         ttk.Entry(holder, textvariable=self.ppi_var, width=6).pack(side=LEFT)
         ttk.Label(holder, text="ppi", style="Muted.TLabel").pack(side=LEFT, padx=(theme.GAP, 0))
 
-        self.auto_orient_var = StringVar(value="1")
+        self.auto_orient_var = self._tracked("auto_orient_var", "1")
         ttk.Checkbutton(
             output_box,
             text="Match orientation to the image",
@@ -259,16 +297,94 @@ class App:
         self.size_note = ttk.Label(output_box, text="", style="Mono.TLabel")
         self.size_note.grid(row=3, column=0, columnspan=2, sticky=W, pady=(theme.ROW_GAP, 0))
 
-        for var in (self.source_var, self.width_var, self.height_var, self.ppi_var, self.auto_orient_var):
-            var.trace_add("write", lambda *_: self._update_size_note())
+        # Every tracked input invalidates a rendered negative; the size note is cheap
+        # enough to recompute alongside it.
+        for var in self._fingerprint_vars.values():
+            var.trace_add("write", lambda *_: self._on_input_changed())
 
+        buttons = ttk.Frame(left)
+        buttons.pack(fill=X, pady=(theme.WIDE_GAP, theme.GAP))
         self.process_button = ttk.Button(
-            left, text="Make negative", style="Accent.TButton", command=self._process
+            buttons, text="Make negative", style="Accent.TButton", command=self._process
         )
-        self.process_button.pack(fill=X, pady=(theme.WIDE_GAP, theme.GAP))
+        self.process_button.pack(fill=X)
+
+        row = ttk.Frame(buttons)
+        row.pack(fill=X, pady=(theme.GAP, 0))
+        self.save_button = ttk.Button(row, text="Save negative", command=self._save_negative, state=DISABLED)
+        self.save_button.pack(side=LEFT, fill=X, expand=True)
+        self.reveal_button = ttk.Button(
+            row, text="Show in Explorer", command=self._show_in_explorer, state=DISABLED
+        )
+        self.reveal_button.pack(side=LEFT, fill=X, expand=True, padx=(theme.GAP, 0))
 
         self.status = ttk.Label(left, text="", wraplength=420, style="OK.TLabel")
         self.status.pack(fill=X)
+
+    # ---- rendered-negative state -------------------------------------------------------
+    #
+    # A negative is saveable only while every input still holds the value it held when the
+    # render started. Change the profile after rendering and the preview is still true —
+    # it is a picture of what was made — but saving it would write a file that disagrees
+    # with the panel that appears to describe it.
+
+    def _on_input_changed(self) -> None:
+        self._update_size_note()
+        self._refresh_save_state()
+
+    def _source_key(self) -> tuple[str, str]:
+        """What the loaded source depends on — the file, and how it was interpreted."""
+        return (self.source_var.get().strip(), self.space_var.get())
+
+    def _cached_source(self) -> Image | str:
+        """The already-loaded source, or its path if the cache no longer applies.
+
+        Reusing the preview's copy saves a re-read of a large scan, but only while the
+        path *and* the colour-space setting still match: changing 'Colour space' changes
+        what the same pixels mean, and a stale cache would silently ignore it.
+        """
+        if self._source_image is not None and self._source_key() == self._source_loaded_key:
+            return self._source_image
+        return self.source_var.get().strip()
+
+    def _is_current(self) -> bool:
+        return (
+            self._last_negative is not None
+            and self._rendered_fingerprint == self._settings_fingerprint()
+        )
+
+    def _refresh_save_state(self) -> None:
+        self.save_button.config(state=NORMAL if self._is_current() else DISABLED)
+        exists = self._saved_path is not None and self._saved_path.exists()
+        self.reveal_button.config(state=NORMAL if exists else DISABLED)
+        if self._last_negative is not None and not self._is_current():
+            self.preview_caption.config(text="Settings changed since this was made — render again")
+
+    def _save_negative(self) -> None:
+        # Re-checked here rather than trusting the button: if the two ever disagree, the
+        # file does not get written.
+        if not self._is_current():
+            messagebox.showinfo("Save", "Settings changed since this negative was made. Render again.")
+            self._refresh_save_state()
+            return
+        output = self.output_var.get().strip()
+        if not output:
+            messagebox.showinfo("Save", "No output path set.")
+            return
+        try:
+            path = cio.save_tiff(output, self._last_negative)
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("Save", str(e))
+            return
+        self._saved_path = Path(path)
+        self.status.config(text=f"Saved {path}")
+        self._refresh_save_state()
+
+    def _show_in_explorer(self) -> None:
+        if self._saved_path is None or not self._saved_path.exists():
+            return
+        # /select returns a non-zero exit code even when it works, so the result is ignored.
+        subprocess.run(["explorer", "/select,", str(self._saved_path)], check=False)
 
     def _update_size_note(self) -> None:
         """Show the print size this image will actually come out at, before committing."""
@@ -299,6 +415,47 @@ class App:
         if path:
             self.source_var.set(path)
             self._set_output(output_for_source(path, self._chosen_output))
+            self._load_source_preview()
+
+    def _load_source_preview(self) -> None:
+        """Show the positive before anything is done to it.
+
+        Seeing the picture is what makes the numbers next to it a judgement rather than an
+        instruction — the channel-noise reading in particular is easy to follow off a cliff
+        when there is nothing on screen to sanity-check it against.
+        """
+        source = self.source_var.get().strip()
+        if not source or not Path(source).is_file():
+            return
+        space = None if self.space_var.get() == "auto" else self.space_var.get()
+        key = self._source_key()
+        self.status.config(text="Opening…")
+
+        def work() -> None:
+            try:
+                image = cio.load_image(source, space=space)  # type: ignore[arg-type]
+                self.queue.put(("source", (image, key)))
+            except cio.ColourSpaceError as e:
+                self.queue.put(("error", f"{e}\n\nSet 'Colour space' explicitly and retry."))
+            except Exception as e:  # noqa: BLE001
+                self.queue.put(("error", f"Could not open {Path(source).name}: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_source(self, image: Image, key: tuple[str, str]) -> None:
+        self._source_image = image
+        self._source_loaded_key = key
+        self.preview_mode.set("source")
+        self._redraw_preview()
+
+        bits = f"{image.size[0]} × {image.size[1]} px, {image.bit_depth}-bit"
+        if image.converted_from:
+            bits += f"   ·   converted from {image.converted_from}"
+        elif self.space_var.get() == "auto":
+            bits += f"   ·   {image.space}"
+        self.source_note.config(text=bits)
+        self.source_note.grid()
+        self.status.config(text="")
 
     def _set_output(self, value: str) -> None:
         """Write the box ourselves, without it counting as Steven's own choice."""
@@ -349,10 +506,12 @@ class App:
             messagebox.showinfo("Analyse noise", "Choose a source image first.")
             return
 
+        cached = self._cached_source()
+        space = None if self.space_var.get() == "auto" else self.space_var.get()
+
         def work() -> None:
             try:
-                space = None if self.space_var.get() == "auto" else self.space_var.get()
-                image = cio.load_image(source, space=space)  # type: ignore[arg-type]
+                image = cached if isinstance(cached, Image) else cio.load_image(source, space=space)  # type: ignore[arg-type]
                 if image.is_mono:
                     self.queue.put(("info", "Source is already monochrome — nothing to analyse."))
                     return
@@ -368,10 +527,9 @@ class App:
 
     def _process(self) -> None:
         source = self.source_var.get().strip()
-        output = self.output_var.get().strip()
         profile = self._current_profile()
-        if not source or profile is None or not output:
-            messagebox.showinfo("Process", "Choose a source image, a profile, and an output path.")
+        if not source or profile is None:
+            messagebox.showinfo("Process", "Choose a source image and a profile.")
             return
         try:
             width, height = float(self.width_var.get()), float(self.height_var.get())
@@ -390,23 +548,30 @@ class App:
 
         space = None if self.space_var.get() == "auto" else self.space_var.get()
         raw = self.raw_var.get() == "1"
+        # Every Tk variable is read here, on the main thread. Reading one from the worker
+        # is not allowed and fails outright when no mainloop is running.
+        auto_orient = self.auto_orient_var.get() == "1"
+        loaded = self._cached_source()
         self.process_button.config(state=DISABLED)
+        self.save_button.config(state=DISABLED)
         self.status.config(text="Processing…")
+        # Taken now, not when the render finishes: changing a setting mid-render must
+        # produce a negative that arrives already stale rather than one that looks current.
+        fingerprint = self._settings_fingerprint()
 
         def work() -> None:
             try:
                 negative = make_negative(
-                    source,
+                    loaded,
                     profile,
                     PrintSize(width, height),
-                    output_path=output,
                     output_ppi=ppi,
                     weights=weights,
                     space=space,  # type: ignore[arg-type]
                     raw_scan=raw,
-                    auto_orient=self.auto_orient_var.get() == "1",
+                    auto_orient=auto_orient,
                 )
-                self.queue.put(("done", (output, negative)))
+                self.queue.put(("done", (negative, fingerprint)))
             except cio.ColourSpaceError as e:
                 self.queue.put(("error", f"{e}\n\nSet 'Colour space' explicitly and retry."))
             except Exception as e:  # noqa: BLE001
@@ -416,18 +581,31 @@ class App:
 
     def _show_preview(self, negative: Image) -> None:
         self._last_negative = negative
+        self.preview_mode.set("film")
         self._redraw_preview()
 
     def _redraw_preview(self) -> None:
-        negative = getattr(self, "_last_negative", None)
-        if negative is None:
-            return
-        profile = self._current_profile()
-        data = negative.data
+        mode = self.preview_mode.get()
+        negative = self._last_negative
         self.proof_note.config(text="")
         self.proof_note.pack_forget()
 
-        if self.preview_mode.get() == "proof":
+        if mode != "source" and negative is None:
+            # Nothing rendered yet; fall back rather than blanking what is on screen.
+            if self._source_image is None:
+                return
+            self.preview_mode.set(mode := "source")
+
+        if mode == "source":
+            if self._source_image is None:
+                return
+            image, kind = self._source_image, "source positive"
+        else:
+            image, kind = negative, "film, ink side down"
+
+        data = image.data
+        if mode == "proof":
+            profile = self._current_profile()
             if profile is None or not can_proof(profile):
                 self.proof_note.config(
                     text="No measured response in this profile — calibrate first; "
@@ -436,7 +614,7 @@ class App:
                 self.proof_note.pack(fill=X, pady=(theme.GAP, 0), before=self.preview_label.master)
                 self.preview_mode.set("film")
             else:
-                data = soft_proof(negative, profile).data
+                data, kind = soft_proof(negative, profile).data, "predicted print"
 
         arr = (np.clip(data, 0.0, 1.0) * 255).astype(np.uint8)
         pil = PILImage.fromarray(arr)
@@ -445,9 +623,8 @@ class App:
         self.preview_photo = ImageTk.PhotoImage(pil)
         self.preview_label.config(image=self.preview_photo, text="")
         mm = ""
-        if negative.ppi:
-            mm = f"   {full_w / negative.ppi * 25.4:.0f} × {full_h / negative.ppi * 25.4:.0f} mm"
-        kind = "predicted print" if self.preview_mode.get() == "proof" else "film, ink side down"
+        if image.ppi:
+            mm = f"   {full_w / image.ppi * 25.4:.0f} × {full_h / image.ppi * 25.4:.0f} mm"
         self.preview_caption.config(text=f"{full_w} × {full_h} px{mm}   ·   {kind}")
 
     def _poll_queue(self) -> None:
@@ -455,10 +632,19 @@ class App:
             while True:
                 kind, payload = self.queue.get_nowait()
                 if kind == "done":
-                    output, negative = payload
+                    negative, fingerprint = payload
                     self.process_button.config(state=NORMAL)
-                    self.status.config(text=f"Saved {output}")
+                    self._rendered_fingerprint = fingerprint
                     self._show_preview(negative)
+                    stale = fingerprint != self._settings_fingerprint()
+                    self.status.config(
+                        text="Settings changed while rendering — render again to save"
+                        if stale
+                        else "Negative ready — check the proof, then save"
+                    )
+                    self._refresh_save_state()
+                elif kind == "source":
+                    self._show_source(*payload)
                 elif kind == "noise":
                     report, suggested = payload
                     self.status.config(text=f"Noise σ  {report}")

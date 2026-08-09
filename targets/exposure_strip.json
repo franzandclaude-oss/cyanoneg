@@ -9,7 +9,7 @@
   "height_mm": 30.0,
   "blocker_rgb": [
     255,
-    0,
+    64,
     0
   ],
   "layout": [
