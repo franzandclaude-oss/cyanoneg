@@ -53,6 +53,18 @@ from ..targets import blocker_grid, exposure_strip, step_wedge
 from . import theme
 
 
+def output_for_source(source: str | Path, current: str = "") -> str:
+    """Where the negative for `source` should go, keeping any folder already chosen.
+
+    The name is always derived from the source image, so processing a second picture
+    cannot silently overwrite the first one's negative. If Steven has picked a
+    destination by hand, that folder is kept and only the filename follows the source —
+    a name meant for one image should not carry over to another.
+    """
+    source = Path(source)
+    name = source.stem + "_negative.tif"
+    return str(Path(current).with_name(name) if current else source.with_name(name))
+
 
 class App:
     def __init__(self, root: Tk) -> None:
@@ -276,9 +288,7 @@ class App:
         )
         if path:
             self.source_var.set(path)
-            if not self.output_var.get():
-                p = Path(path)
-                self.output_var.set(str(p.with_name(p.stem + "_negative.tif")))
+            self.output_var.set(output_for_source(path, self.output_var.get()))
 
     def _pick_output(self) -> None:
         path = filedialog.asksaveasfilename(
