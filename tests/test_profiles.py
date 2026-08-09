@@ -99,7 +99,7 @@ class TestShippedProfiles:
         assert profile.lut.is_identity()
         assert profile.is_ready_to_print
 
-    def test_paper1_names_real_materials(self):
+    def test_cassart_names_real_materials(self):
         """"Paper 1" and "Film 1" were stand-ins until the actual materials were identified.
 
         A profile is only reproducible if someone can go and buy what it was measured on,
@@ -108,7 +108,7 @@ class TestShippedProfiles:
         the first suspect, and a fact buried in free text cannot be compared across
         profiles.
         """
-        profile = Profile.load(PROFILE_DIR / "paper1-provisional.json")
+        profile = Profile.load(PROFILE_DIR / "cassart-300-sm.json")
         for value in (profile.paper, profile.film, profile.film_batch):
             assert value.strip(), "materials must be named"
         assert profile.paper == "CassArt 300 Sm"
@@ -116,34 +116,33 @@ class TestShippedProfiles:
         assert profile.film_batch == "Batch One"
         assert "Paper 1" not in profile.name, "the placeholder name must not survive"
 
-    def test_paper1_is_measured_not_provisional(self):
-        """Paper 1 is calibrated: measured blocker, measured curve, provisional cleared.
+    def test_cassart_is_measured_not_provisional(self):
+        """The paper is calibrated: measured blocker, measured curve, provisional cleared.
 
         This assertion has now inverted twice as the calibration progressed — first the
         profile could not print at all, then it could print but was provisional pending a
-        curve. Both earlier states are gone. The filename still says "provisional" only
-        because renaming it would break the paths recorded elsewhere.
+        curve. Both earlier states are gone, and so is the filename that recorded them.
         """
-        profile = Profile.load(PROFILE_DIR / "paper1-provisional.json")
+        profile = Profile.load(PROFILE_DIR / "cassart-300-sm.json")
         assert profile.is_ready_to_print
         assert not profile.provisional
         assert not profile.lut.is_identity(), "a measured paper cannot have an identity curve"
 
-    def test_paper1_curve_is_usable(self):
+    def test_cassart_curve_is_usable(self):
         """The curve must be monotonic and span the full range, or it is not a tone curve.
 
         A non-monotonic curve would reverse tones somewhere in the scale; one that does not
         reach both ends would clip. Neither is visible by looking at a profile.
         """
-        lut = Profile.load(PROFILE_DIR / "paper1-provisional.json").lut
+        lut = Profile.load(PROFILE_DIR / "cassart-300-sm.json").lut
         values = np.asarray(lut.values)
         assert np.all(np.diff(values) >= -1e-9)
         assert values[0] == pytest.approx(0.0, abs=1e-6)
         assert values[-1] == pytest.approx(1.0, abs=1e-6)
 
-    def test_paper1_records_what_it_was_measured_from(self):
+    def test_cassart_records_what_it_was_measured_from(self):
         """A calibration nobody can trace is a calibration nobody can check."""
-        d = json.loads((PROFILE_DIR / "paper1-provisional.json").read_text(encoding="utf-8"))
+        d = json.loads((PROFILE_DIR / "cassart-300-sm.json").read_text(encoding="utf-8"))
         m = d["measurements"]
         assert m["raw_patches"], "patch readings must be kept so the curve can be recomputed"
         assert m["scan_date"] and m["wedge_scan"] and m["blocker_scan"]
@@ -155,7 +154,7 @@ class TestShippedProfiles:
         A profile silently carrying the placeholder would print, and print plausibly, while
         blocking UV worse than the measured hue — the kind of wrong that looks fine.
         """
-        for name in ("linear", "paper1-provisional"):
+        for name in ("linear", "cassart-300-sm"):
             blocker = Profile.load(PROFILE_DIR / f"{name}.json").blocker
             assert tuple(blocker["rgb"]) != (255, 0, 0), f"{name} still holds the placeholder"
             assert blocker["model"] == "fixed_hue"

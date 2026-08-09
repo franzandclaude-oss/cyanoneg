@@ -269,8 +269,10 @@ Instead, Phase 1 uses this document's own Harmon model (*one curve, saturation s
 - **`profiles/linear.json`** — identity LUT, `provisional: false`. **All calibration targets print
   through this**, so measurements capture the process itself rather than the process plus somebody
   else's curve.
-- **`profiles/paper1-provisional.json`** — identity LUT, `provisional: true`, blocker hue and
-  saturation left blank until the HSB grid is read.
+- **a second profile for the paper being calibrated** — identity LUT, `provisional: true`, blocker
+  hue and saturation left blank until the HSB grid is read. This shipped as
+  `paper1-provisional.json` and is now `cassart-300-sm.json`: measured, non-provisional, and named
+  for the actual paper rather than for a placeholder and a status it has outgrown.
 
 The HSB blocker grid already sweeps hue × saturation, so the first sheet yields both the best
 UV-blocking hue and a saturation that lands density range in the 1.2–1.4 window. A *shaped* tone
