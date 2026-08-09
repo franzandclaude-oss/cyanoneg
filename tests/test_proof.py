@@ -37,11 +37,25 @@ def measured_profile(**overrides) -> Profile:
 class TestRefusal:
     """A proof invented from no data would look authoritative and be fiction."""
 
-    def test_shipped_provisional_profile_cannot_proof(self):
-        profile = Profile.load(PROFILE_DIR / "paper1-provisional.json")
+    def test_profile_without_measurements_cannot_proof(self):
+        """The refusal is what keeps a proof honest — it must survive Paper 1 being measured.
+
+        This used to assert against the shipped Paper 1 profile, which carried no patches.
+        It now does, so the test builds its own empty profile rather than quietly becoming
+        a test of nothing the day the calibration landed.
+        """
+        profile = Profile.load(PROFILE_DIR / "linear.json")
+        assert not profile.measurements.get("raw_patches")
         assert not can_proof(profile)
         with pytest.raises(ProofUnavailable, match="no measured patches"):
             measured_response(profile)
+
+    def test_measured_paper1_can_proof(self):
+        """The other half of the same rule: a measured profile must actually proof."""
+        profile = Profile.load(PROFILE_DIR / "paper1-provisional.json")
+        assert can_proof(profile)
+        response = measured_response(profile)
+        assert response is not None
 
     def test_too_few_patches(self):
         profile = measured_profile(measurements={"raw_patches": [{"value": 0, "lstar": 90.0}]})

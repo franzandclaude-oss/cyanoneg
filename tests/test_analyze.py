@@ -281,3 +281,65 @@ class TestZoneGridAnalysis:
         wedge_sidecar.write_text(json.dumps(step_wedge((255, 0, 0)).sidecar))
         with pytest.raises(AnalysisError, match="not a zone-grid sidecar"):
             analyze_zone_grid(scan, wedge_sidecar)
+
+
+class TestOutlierRejection:
+    """Spike detection must not get stricter just because there are more copies.
+
+    A max-minus-min spread test grows with sample count on perfectly clean data. Tuned at
+    k=2 it fired on 31 of 32 levels once the wedge moved to k=16, on a good print — the
+    warning became noise at exactly the moment the redundancy made real rejection possible.
+    """
+
+    def _sidecar(self, tmp_path, wedge):
+        p = tmp_path / "sc.json"
+        p.write_text(json.dumps(wedge.sidecar))
+        return p
+
+    def test_clean_print_at_high_redundancy_is_quiet(self, tmp_path):
+        wedge = step_wedge((255, 0, 0), levels=32, redundancy=16, seed=7)
+        printed = render_print(wedge, process_response)
+        scan = tmp_path / "clean.tif"
+        save_tiff(scan, scan_of(printed))
+        result = analyze_wedge(scan, self._sidecar(tmp_path, wedge))
+        assert len(result.spikes) <= 2, f"clean print flagged {len(result.spikes)} levels"
+
+    def test_single_bad_patch_is_identified_and_dropped(self, tmp_path):
+        """With 16 siblings the analysis can say which copy is wrong, not just that one is."""
+        wedge = step_wedge((255, 0, 0), levels=32, redundancy=16, seed=7)
+        printed = render_print(wedge, process_response)
+        victim = next(c for c in wedge.sidecar["cells"] if c["value"] == 16)
+        printed[
+            victim["y_px"] : victim["y_px"] + victim["h_px"],
+            victim["x_px"] : victim["x_px"] + victim["w_px"],
+        ] = _lstar_to_y(np.array([88.0]))[0]
+
+        scan = tmp_path / "spiked.tif"
+        save_tiff(scan, scan_of(printed))
+        result = analyze_wedge(scan, self._sidecar(tmp_path, wedge))
+
+        flagged = [s for s in result.spikes if s["value"] == 16]
+        assert flagged, "the corrupted patch was not flagged"
+        assert flagged[0]["rejected"] >= 1
+        assert (victim["row"], victim["col"]) in flagged[0]["positions"]
+
+        # And the curve is unharmed, because the bad copy never entered the mean.
+        x = np.linspace(0, 1, 1001)
+        recovered = process_response(result.lut.apply(x))
+        assert np.abs(recovered[50:951] - x[50:951]).max() < 0.06
+
+    def test_two_copies_flag_without_rejecting(self, tmp_path):
+        """At k=2 neither copy can be shown to be the bad one, so both must survive."""
+        wedge = step_wedge((255, 0, 0), levels=64, redundancy=2, seed=7)
+        printed = render_print(wedge, process_response)
+        victim = next(c for c in wedge.sidecar["cells"] if c["value"] == 32)
+        printed[
+            victim["y_px"] : victim["y_px"] + victim["h_px"],
+            victim["x_px"] : victim["x_px"] + victim["w_px"],
+        ] = _lstar_to_y(np.array([88.0]))[0]
+
+        scan = tmp_path / "spiked2.tif"
+        save_tiff(scan, scan_of(printed))
+        result = analyze_wedge(scan, self._sidecar(tmp_path, wedge))
+        flagged = [s for s in result.spikes if s["value"] == 32]
+        assert flagged and flagged[0]["rejected"] == 0

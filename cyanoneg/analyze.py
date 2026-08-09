@@ -33,7 +33,20 @@ from .lut import Lut, derive_correction
 DR_WINDOW = (1.2, 1.4)
 
 #: Copies of the same level differing by more than this (normalised response) are spikes.
+#: How far one copy of a level may sit from its siblings' median before it is called an
+#: outlier, in normalised print lightness.
+#:
+#: Deliberately *not* a max-minus-min test on the whole group. Range grows with sample
+#: count for perfectly clean data, so a spread threshold tuned at 2 copies fires on almost
+#: every level at 16 — which is exactly what happened when the wedge moved to k=16 and 31
+#: of 32 levels flagged on a good print.
 SPIKE_TOLERANCE = 0.04
+
+#: Robust scale multiplier for outlier rejection. 1.4826 * MAD estimates sigma for normal
+#: data; rejecting beyond 4 sigma keeps coating variation (which is the signal's own noise)
+#: while catching an ink spike or a coating defect on one patch.
+SPIKE_SIGMAS = 4.0
+_MAD_TO_SIGMA = 1.4826
 
 _REC709 = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
@@ -389,16 +402,44 @@ def analyze_wedge(scan_path: str | Path, sidecar_path: str | Path, *, space=None
     measured_in = np.array([v / (sidecar["levels"] - 1) for v in levels])
     measured_out = np.empty(len(levels))
     for i, v in enumerate(levels):
-        copies = [normalise(s["lstar"]) for s in by_value[v]]
-        if len(copies) > 1 and (max(copies) - min(copies)) > SPIKE_TOLERANCE:
+        copies = np.array([normalise(s["lstar"]) for s in by_value[v]])
+        keep = np.ones(len(copies), dtype=bool)
+
+        if len(copies) > 2:
+            # Robust rejection: a copy is an outlier against its own siblings, not against
+            # a fixed spread. Enough copies here to identify *which* one is bad and drop
+            # it, which is the whole point of the redundancy.
+            median = float(np.median(copies))
+            mad = float(np.median(np.abs(copies - median)))
+            scale = max(mad * _MAD_TO_SIGMA, SPIKE_TOLERANCE / 4.0)  # floor: MAD can be 0
+            keep = np.abs(copies - median) <= SPIKE_SIGMAS * scale
+            if not keep.any():  # pathological; keep everything rather than lose the level
+                keep = np.ones(len(copies), dtype=bool)
+        elif len(copies) == 2 and abs(copies[0] - copies[1]) > SPIKE_TOLERANCE:
+            # Two copies cannot say which one is wrong, so flag and keep both.
+            keep = np.ones(2, dtype=bool)
             spikes.append(
                 {
                     "value": v,
-                    "responses": [round(c, 4) for c in copies],
+                    "responses": [round(float(c), 4) for c in copies],
                     "positions": [(s["row"], s["col"]) for s in by_value[v]],
+                    "rejected": 0,
                 }
             )
-        measured_out[i] = float(np.mean(copies))
+
+        if len(copies) > 2 and not keep.all():
+            spikes.append(
+                {
+                    "value": v,
+                    "responses": [round(float(c), 4) for c in copies[~keep]],
+                    "positions": [
+                        (s["row"], s["col"]) for s, k in zip(by_value[v], keep) if not k
+                    ],
+                    "rejected": int((~keep).sum()),
+                }
+            )
+
+        measured_out[i] = float(copies[keep].mean())
 
     # Density range from the linear-luminance references.
     y_paper = float(np.mean([s["y_linear"] for s in by_value[top]]))
@@ -415,7 +456,11 @@ def analyze_wedge(scan_path: str | Path, sidecar_path: str | Path, *, space=None
             "unusual for classic cyanotype; check the scan"
         )
     if len(spikes) > 12:
-        warnings.append(f"{len(spikes)} spike flags — inspect the print for coating/ink defects")
+        rejected = sum(s.get("rejected", 0) for s in spikes)
+        warnings.append(
+            f"{len(spikes)} levels with outlier patches ({rejected} copies dropped from the "
+            "averages) — inspect the print for coating/ink defects"
+        )
 
     lut = derive_correction(measured_in, measured_out)
     raw_patches = [

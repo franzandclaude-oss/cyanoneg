@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 
@@ -95,25 +97,43 @@ class TestShippedProfiles:
         assert profile.lut.is_identity()
         assert profile.is_ready_to_print
 
-    def test_paper1_provisional(self):
+    def test_paper1_identity(self):
         profile = Profile.load(PROFILE_DIR / "paper1-provisional.json")
-        assert profile.lut.is_identity()
         assert profile.film == "Film 1"
         assert profile.paper == "Paper 1"
 
-    def test_provisional_tracks_the_curve_not_the_blocker(self):
-        """Paper 1 can print while still being provisional, and the two must not be conflated.
+    def test_paper1_is_measured_not_provisional(self):
+        """Paper 1 is calibrated: measured blocker, measured curve, provisional cleared.
 
-        The HSB grid has been read, so the blocker is measured and the profile is usable.
-        The tone curve has not, so the LUT is still identity and the tones are a starting
-        point rather than a calibration. Before the grid was read this test asserted the
-        opposite — that the profile could *not* print — which is a state the repo has now
-        left behind.
+        This assertion has now inverted twice as the calibration progressed — first the
+        profile could not print at all, then it could print but was provisional pending a
+        curve. Both earlier states are gone. The filename still says "provisional" only
+        because renaming it would break the paths recorded elsewhere.
         """
         profile = Profile.load(PROFILE_DIR / "paper1-provisional.json")
-        assert profile.is_ready_to_print  # blocker measured
-        assert profile.provisional  # curve not
-        assert profile.lut.is_identity()
+        assert profile.is_ready_to_print
+        assert not profile.provisional
+        assert not profile.lut.is_identity(), "a measured paper cannot have an identity curve"
+
+    def test_paper1_curve_is_usable(self):
+        """The curve must be monotonic and span the full range, or it is not a tone curve.
+
+        A non-monotonic curve would reverse tones somewhere in the scale; one that does not
+        reach both ends would clip. Neither is visible by looking at a profile.
+        """
+        lut = Profile.load(PROFILE_DIR / "paper1-provisional.json").lut
+        values = np.asarray(lut.values)
+        assert np.all(np.diff(values) >= -1e-9)
+        assert values[0] == pytest.approx(0.0, abs=1e-6)
+        assert values[-1] == pytest.approx(1.0, abs=1e-6)
+
+    def test_paper1_records_what_it_was_measured_from(self):
+        """A calibration nobody can trace is a calibration nobody can check."""
+        d = json.loads((PROFILE_DIR / "paper1-provisional.json").read_text(encoding="utf-8"))
+        m = d["measurements"]
+        assert m["raw_patches"], "patch readings must be kept so the curve can be recomputed"
+        assert m["scan_date"] and m["wedge_scan"] and m["blocker_scan"]
+        assert 0.5 < m["density_range"] < 2.0
 
     def test_shipped_blockers_are_no_longer_the_placeholder(self):
         """(255, 0, 0) was a stand-in until the grid was measured; nothing should still use it.
