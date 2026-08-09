@@ -60,9 +60,10 @@ class TestValidation:
 class TestRoundTrip:
     def test_save_load_preserves_everything(self, tmp_path):
         profile = _valid_profile(
-            paper="Paper 1",
+            paper="CassArt 300 Sm",
             chemistry="Chemistry",
-            film="Film 1",
+            film="Film Generic",
+            film_batch="Batch One",
             driver_settings={"color_correction": "No Color Adjustment"},
             lut=Lut(np.linspace(0, 1, 256) ** 0.85),
             measurements={"raw_patches": [[0, 0.01], [128, 0.5]], "scan_date": "2026-07-25"},
@@ -70,7 +71,8 @@ class TestRoundTrip:
         path = profile.save(tmp_path / "p.json")
         back = Profile.load(path)
         assert back.name == profile.name
-        assert back.film == "Film 1"
+        assert back.film == "Film Generic"
+        assert back.film_batch == "Batch One"
         assert back.working_space == "srgb"
         assert back.driver_settings == profile.driver_settings
         assert back.measurements == profile.measurements
@@ -97,10 +99,22 @@ class TestShippedProfiles:
         assert profile.lut.is_identity()
         assert profile.is_ready_to_print
 
-    def test_paper1_identity(self):
+    def test_paper1_names_real_materials(self):
+        """"Paper 1" and "Film 1" were stand-ins until the actual materials were identified.
+
+        A profile is only reproducible if someone can go and buy what it was measured on,
+        so the placeholders must not survive. The batch is a field of its own rather than
+        part of the film's name: when prints drift for no visible reason a batch change is
+        the first suspect, and a fact buried in free text cannot be compared across
+        profiles.
+        """
         profile = Profile.load(PROFILE_DIR / "paper1-provisional.json")
-        assert profile.film == "Film 1"
-        assert profile.paper == "Paper 1"
+        for value in (profile.paper, profile.film, profile.film_batch):
+            assert value.strip(), "materials must be named"
+        assert profile.paper == "CassArt 300 Sm"
+        assert profile.film == "Film Generic"
+        assert profile.film_batch == "Batch One"
+        assert "Paper 1" not in profile.name, "the placeholder name must not survive"
 
     def test_paper1_is_measured_not_provisional(self):
         """Paper 1 is calibrated: measured blocker, measured curve, provisional cleared.

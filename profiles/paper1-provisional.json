@@ -1,10 +1,11 @@
 {
-  "name": "Paper 1 — Chemistry (measured)",
-  "paper": "Paper 1",
+  "name": "CassArt 300 Sm — Chemistry (measured)",
+  "paper": "CassArt 300 Sm",
   "chemistry": "Chemistry",
   "printer": "Epson ET-1810",
   "media_type": "Photo Paper Glossy",
-  "film": "Film 1",
+  "film": "Film Generic",
+  "film_batch": "Batch One",
   "working_space": "srgb",
   "provisional": false,
   "driver_settings": {
@@ -4397,7 +4398,8 @@
     "paper_lstar": 96.76,
     "black_lstar": 32.16,
     "outlier_levels": 1,
-    "note": "Both halves off ONE coated sheet, so blocker and curve share a coating pass, exposure, wash and drying; they agree on density range to 0.052 log units where separate sheets disagreed by 0.19. Derived from the Photoshop-converted sRGB scans; the raw-linear route independently gave the same blocker and a curve differing by a mean of 0.005, so the colour-space handling is corroborated rather than assumed."
+    "note": "Both halves off ONE coated sheet, so blocker and curve share a coating pass, exposure, wash and drying; they agree on density range to 0.052 log units where separate sheets disagreed by 0.19. Derived from the Photoshop-converted sRGB scans; the raw-linear route independently gave the same blocker and a curve differing by a mean of 0.005, so the colour-space handling is corroborated rather than assumed.",
+    "paper_note": "Recorded 2026-08-09. Everything measured here - blocker, curve, density range, SPE - was measured on this paper and this film batch. A different paper or batch needs its own profile, not an edit of this one."
   },
   "scan_settings": {
     "device": "Epson Perfection V600",

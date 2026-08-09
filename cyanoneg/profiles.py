@@ -42,6 +42,10 @@ class Profile:
     printer: str = "Epson ET-1810"
     media_type: str = ""
     film: str = ""
+    #: Kept separate from ``film`` rather than folded into its name: when prints start
+    #: drifting for no visible reason, a batch change is the first thing to check, and a
+    #: fact buried inside a free-text product name cannot be compared between profiles.
+    film_batch: str = ""
     working_space: Space = "srgb"
     provisional: bool = True
     driver_settings: dict[str, Any] = field(default_factory=dict)
@@ -127,6 +131,7 @@ class Profile:
             "printer": self.printer,
             "media_type": self.media_type,
             "film": self.film,
+            "film_batch": self.film_batch,
             "working_space": self.working_space,
             "provisional": self.provisional,
             "driver_settings": self.driver_settings,
@@ -151,6 +156,7 @@ class Profile:
                 printer=d.get("printer", "Epson ET-1810"),
                 media_type=d.get("media_type", ""),
                 film=d.get("film", ""),
+                film_batch=d.get("film_batch", ""),
                 working_space=d.get("working_space", "srgb"),
                 provisional=bool(d.get("provisional", True)),
                 driver_settings=d.get("driver_settings", {}),
