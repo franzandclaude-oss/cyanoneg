@@ -52,7 +52,7 @@ class TestRefusal:
 
     def test_measured_paper1_can_proof(self):
         """The other half of the same rule: a measured profile must actually proof."""
-        profile = Profile.load(PROFILE_DIR / "cassart-300-sm.json")
+        profile = Profile.load(PROFILE_DIR / "CassArt 300 Sm.json")
         assert can_proof(profile)
         response = measured_response(profile)
         assert response is not None

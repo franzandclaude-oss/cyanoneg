@@ -108,7 +108,7 @@ class TestShippedProfiles:
         the first suspect, and a fact buried in free text cannot be compared across
         profiles.
         """
-        profile = Profile.load(PROFILE_DIR / "cassart-300-sm.json")
+        profile = Profile.load(PROFILE_DIR / "CassArt 300 Sm.json")
         for value in (profile.paper, profile.film, profile.film_batch):
             assert value.strip(), "materials must be named"
         assert profile.paper == "CassArt 300 Sm"
@@ -123,7 +123,7 @@ class TestShippedProfiles:
         profile could not print at all, then it could print but was provisional pending a
         curve. Both earlier states are gone, and so is the filename that recorded them.
         """
-        profile = Profile.load(PROFILE_DIR / "cassart-300-sm.json")
+        profile = Profile.load(PROFILE_DIR / "CassArt 300 Sm.json")
         assert profile.is_ready_to_print
         assert not profile.provisional
         assert not profile.lut.is_identity(), "a measured paper cannot have an identity curve"
@@ -134,7 +134,7 @@ class TestShippedProfiles:
         A non-monotonic curve would reverse tones somewhere in the scale; one that does not
         reach both ends would clip. Neither is visible by looking at a profile.
         """
-        lut = Profile.load(PROFILE_DIR / "cassart-300-sm.json").lut
+        lut = Profile.load(PROFILE_DIR / "CassArt 300 Sm.json").lut
         values = np.asarray(lut.values)
         assert np.all(np.diff(values) >= -1e-9)
         assert values[0] == pytest.approx(0.0, abs=1e-6)
@@ -142,7 +142,7 @@ class TestShippedProfiles:
 
     def test_cassart_records_what_it_was_measured_from(self):
         """A calibration nobody can trace is a calibration nobody can check."""
-        d = json.loads((PROFILE_DIR / "cassart-300-sm.json").read_text(encoding="utf-8"))
+        d = json.loads((PROFILE_DIR / "CassArt 300 Sm.json").read_text(encoding="utf-8"))
         m = d["measurements"]
         assert m["raw_patches"], "patch readings must be kept so the curve can be recomputed"
         assert m["scan_date"] and m["wedge_scan"] and m["blocker_scan"]
@@ -154,7 +154,7 @@ class TestShippedProfiles:
         A profile silently carrying the placeholder would print, and print plausibly, while
         blocking UV worse than the measured hue — the kind of wrong that looks fine.
         """
-        for name in ("linear", "cassart-300-sm"):
+        for name in ("linear", "CassArt 300 Sm"):
             blocker = Profile.load(PROFILE_DIR / f"{name}.json").blocker
             assert tuple(blocker["rgb"]) != (255, 0, 0), f"{name} still holds the placeholder"
             assert blocker["model"] == "fixed_hue"
