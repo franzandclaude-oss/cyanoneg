@@ -104,7 +104,7 @@ range. Pt/Pd would not be achievable on this hardware.
 
 ## Environment (verified)
 
-- Python **3.14.6**, pip 26.1.2 at `C:\Users\steve\AppData\Local\Python\pythoncore-3.14-64`
+- Python **3.14.6**, pip 26.1.2 (per-user install, Windows)
 - `pywin32` 312 present; **tkinter 8.6 present** (no GUI dependency needed)
 - git 2.53.0 present
 - Photoshop **2025 and 2026** both installed
@@ -144,9 +144,8 @@ instead. This is the most likely source of a silent tonal error in the whole too
 
 ## Architecture
 
-Project root: **`C:\Users\steve\Desktop\Claude\Cyanotype\`** (git-initialised).
-
-All projects live in subfolders of `C:\Users\steve\Desktop\Claude\`.
+Project root: the repository itself, git-initialised, with the virtual environment in
+`.venv/` beside it.
 
 ```
 cyanoneg/
