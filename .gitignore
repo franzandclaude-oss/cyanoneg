@@ -19,6 +19,11 @@ targets/*.tiff
 # profile that made them, so the recipe is tracked and the output is not.
 out/
 *_negative.tif
+
+# The supplied 256-patch chart. Untracked because its provenance is unknown and it is not
+# ours to redistribute; it stays on the working machine. tests/conftest.py skips the chart
+# test cleanly when it is absent, so a fresh clone still runs green.
+EDN_RGB_256.tif
 EDN_RGB_256_2.tif
 
 # Scans of calibration prints. Tens of MB each and one per calibration sheet.

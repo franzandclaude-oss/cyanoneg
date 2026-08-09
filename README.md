@@ -96,6 +96,10 @@ There is a synthetic round trip in `tests/simulate.py` that runs the whole calib
 generate a wedge, apply a known non-linear response, measure it, derive the correction,
 check it inverts — with no film, paper or chemistry consumed.
 
+One test needs a supplied 256-patch reference chart that is not included here, because its
+provenance is unknown and it is not ours to redistribute. That test skips when the file is
+absent; everything else runs.
+
 ## Profiles
 
 A profile is JSON, and readable. It records the paper, film and batch, the exact printer
