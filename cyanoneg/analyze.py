@@ -42,6 +42,14 @@ DR_WINDOW = (1.2, 1.4)
 #: of 32 levels flagged on a good print.
 SPIKE_TOLERANCE = 0.04
 
+#: Accepted blob size, as a fraction of the expected fiducial size.
+#:
+#: The upper bound has to sit below the patch-to-fiducial size ratio or the filter does not
+#: separate them — in the default wedge that ratio is 78/56 = 1.39, so 1.8 (the first value
+#: tried) admitted exactly the blobs it was added to exclude. 1.3 leaves room for a
+#: fiducial's blob to grow under blur and thresholding while still rejecting a patch.
+_FID_SIZE_BAND = (0.6, 1.3)
+
 #: Robust scale multiplier for outlier rejection. 1.4826 * MAD estimates sigma for normal
 #: data; rejecting beyond 4 sigma keeps coating variation (which is the signal's own noise)
 #: while catching an ink spike or a coating defect on one patch.
@@ -133,6 +141,39 @@ class Blob:
         return self.area / ((y1 - y0 + 1) * (x1 - x0 + 1))
 
 
+def _blob_size(blob: Blob) -> int:
+    """Longer side of the blob's bounding box, in detection pixels."""
+    y0, x0, y1, x1 = blob.bbox
+    return max(y1 - y0, x1 - x0) + 1
+
+
+def _expected_fiducial_size(scan, sidecar: dict, fid_px: int, scale: int, candidates) -> float | None:
+    """How large a fiducial should appear, in detection pixels.
+
+    Preferred route is the scan's own ppi against the sidecar's: the print is a known
+    physical size, so a fiducial's size on any scan of it follows directly.
+
+    Falling back when the scan carries no ppi, the fiducials are all identical by
+    construction, so the largest cluster of similarly-sized candidates is almost certainly
+    them — dark wedge patches vary in how much of each one clears the threshold, while the
+    fiducials are solid clear film and clear it completely every time.
+    """
+    scan_ppi = getattr(scan, "ppi", None)
+    sidecar_ppi = sidecar.get("ppi")
+    if scan_ppi and sidecar_ppi:
+        return fid_px * (scan_ppi / sidecar_ppi) / scale
+
+    sizes = sorted(_blob_size(b) for b in candidates)
+    if len(sizes) < 4:
+        return None
+    best_count, best_size = 0, None
+    for s in sizes:  # widest window holding sizes within 25% of each other
+        group = [t for t in sizes if s <= t <= s * 1.25]
+        if len(group) > best_count:
+            best_count, best_size = len(group), float(np.median(group))
+    return best_size if best_count >= 4 else None
+
+
 def _connected_components(mask: np.ndarray, min_area: int) -> list[Blob]:
     """4-connected components of a boolean mask via BFS — fine at detection resolution."""
     visited = np.zeros_like(mask, dtype=bool)
@@ -200,6 +241,24 @@ def detect_fiducials(scan: Image, sidecar: dict) -> Frame:
             f"found only {len(candidates)} fiducial candidates — "
             "check the scan includes the full border and try a higher-resolution scan"
         )
+
+    # Keep only blobs the size a fiducial should be.
+    #
+    # Shape alone does not distinguish a fiducial from a dark wedge patch — both are dark
+    # squares. Which blobs pass the threshold depends on how deep the print's shadows came
+    # out, so the same sheet scanned two ways yielded 60 candidates one time and 82 the
+    # other, and in the second the corner picks landed on patches instead of fiducials.
+    # Detection then failed with "no hollow fiducial found" while the fiducial sat plainly
+    # in the scan.
+    #
+    # The expected size is known: the sidecar records it in print pixels, and the scan's
+    # own ppi gives the conversion. Without a ppi tag, fall back to the largest cluster of
+    # similarly-sized candidates, since the fiducials are all identical by construction.
+    expected = _expected_fiducial_size(scan, sidecar, fid_px, scale, candidates)
+    if expected is not None:
+        sized = [b for b in candidates if _FID_SIZE_BAND[0] * expected <= _blob_size(b) <= _FID_SIZE_BAND[1] * expected]
+        if len(sized) >= 4:
+            candidates = sized
 
     xs = [b.centre[0] for b in candidates]
     ys = [b.centre[1] for b in candidates]

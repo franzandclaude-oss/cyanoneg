@@ -343,3 +343,67 @@ class TestOutlierRejection:
         result = analyze_wedge(scan, self._sidecar(tmp_path, wedge))
         flagged = [s for s in result.spikes if s["value"] == 32]
         assert flagged and flagged[0]["rejected"] == 0
+
+
+class TestFiducialSizeFilter:
+    """Shape alone cannot tell a fiducial from a dark wedge patch — both are dark squares.
+
+    Which blobs clear the dark threshold depends on how open the print's shadows are, so
+    the same sheet scanned two ways gave 60 candidates once and 82 the other time; in the
+    second the corner picks landed on patches and detection failed with "no hollow fiducial
+    found" while the fiducial sat plainly in the scan. The sidecar has always recorded how
+    big a fiducial should be; the detector just never used it.
+    """
+
+    def test_open_shadow_print_still_detects(self, wedge, tmp_path):
+        """A print with lifted shadows puts many patches into the dark mask."""
+        printed = render_print(wedge, lambda v: 0.30 + process_response(v) * 0.70)
+        sidecar = tmp_path / "sc.json"
+        sidecar.write_text(json.dumps(wedge.sidecar))
+        scan = tmp_path / "open.tif"
+        save_tiff(scan, scan_of(printed))
+        frame = detect_fiducials(  # must not raise
+            __import__("cyanoneg.imageio", fromlist=["load_image"]).load_image(scan),
+            wedge.sidecar,
+        )
+        assert set(frame.corners) == {"top_left", "top_right", "bottom_left", "bottom_right"}
+
+    def test_size_filter_rejects_patch_sized_blobs(self, wedge):
+        """The band must sit below the patch-to-fiducial size ratio, or it filters nothing.
+
+        This is the assertion that matters. The first band tried was 1.8x while patches are
+        1.39x a fiducial, so it admitted precisely the blobs it existed to exclude.
+        """
+        from cyanoneg.analyze import _FID_SIZE_BAND, _expected_fiducial_size
+
+        fid_px = wedge.sidecar["fiducials"]["top_left"]["size_px"]
+        patch_px = wedge.sidecar["cells"][0]["w_px"]
+        assert fid_px != patch_px, "the test is vacuous if they happen to match"
+        assert _FID_SIZE_BAND[1] < patch_px / fid_px, "band admits patch-sized blobs"
+
+        class FakeScan:
+            ppi = 300.0
+
+        expected = _expected_fiducial_size(FakeScan(), wedge.sidecar, fid_px, scale=2, candidates=[])
+        assert expected == pytest.approx(fid_px * (300.0 / wedge.sidecar["ppi"]) / 2)
+        patch_size = patch_px * (300.0 / wedge.sidecar["ppi"]) / 2
+        assert not (_FID_SIZE_BAND[0] * expected <= patch_size <= _FID_SIZE_BAND[1] * expected)
+
+    def test_falls_back_when_the_scan_has_no_ppi(self, wedge):
+        """Untagged scans still work: the fiducials are the biggest same-sized cluster."""
+        from cyanoneg.analyze import _expected_fiducial_size
+
+        class Blobby:
+            def __init__(self, size):
+                self._s = size
+
+            @property
+            def bbox(self):
+                return (0, 0, self._s - 1, self._s - 1)
+
+        class NoPPI:
+            ppi = None
+
+        cands = [Blobby(24) for _ in range(4)] + [Blobby(9), Blobby(11), Blobby(35)]
+        got = _expected_fiducial_size(NoPPI(), {"ppi": None}, 56, 2, cands)
+        assert got == pytest.approx(24, abs=1.5)
