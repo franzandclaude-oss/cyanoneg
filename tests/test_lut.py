@@ -7,7 +7,7 @@ import struct
 import numpy as np
 import pytest
 
-from cyanoneg.lut import Lut, derive_correction, pchip_eval
+from cyanoneg.lut import CUBE_SIZE, Lut, derive_correction, pchip_eval
 
 
 class TestLutBasics:
@@ -131,11 +131,61 @@ class TestExport:
         with pytest.raises(ValueError):
             Lut.identity().export_acv(tmp_path / "x.acv", points=20)
 
-    def test_cube_structure(self, tmp_path):
-        lut = Lut.identity(64)
-        lines = lut.export_cube(tmp_path / "c.cube").read_text().splitlines()
-        assert lines[1] == "LUT_1D_SIZE 64"
-        rows = [line.split() for line in lines[3:]]
-        assert len(rows) == 64
-        assert all(len(r) == 3 and r[0] == r[1] == r[2] for r in rows)
-        assert float(rows[0][0]) == 0.0 and float(rows[-1][0]) == 1.0
+    def cube_rows(self, path):
+        lines = path.read_text().splitlines()
+        header = {line.split()[0]: line for line in lines if line and not line[0].isdigit()}
+        rows = np.array([[float(v) for v in line.split()] for line in lines if line and line[0].isdigit()])
+        return header, rows
+
+    def test_cube_is_three_dimensional(self, tmp_path):
+        """Photoshop's Color Lookup reads 3D LUTs only.
+
+        A tone curve is one-dimensional and the .cube format does define LUT_1D_SIZE for
+        it — this wrote that for months, and Photoshop rejected the file outright. Steven
+        found it by trying to open one.
+        """
+        header, rows = self.cube_rows(Lut.identity(256).export_cube(tmp_path / "c.cube", size=8))
+        assert header["LUT_3D_SIZE"] == "LUT_3D_SIZE 8"
+        assert "LUT_1D_SIZE" not in header
+        assert len(rows) == 8**3
+
+    def test_cube_entries_are_ordered_red_fastest(self, tmp_path):
+        """Get the axis order wrong and the file loads, then maps colours to nonsense."""
+        _, rows = self.cube_rows(Lut.identity(256).export_cube(tmp_path / "c.cube", size=4))
+        step = 1 / 3
+        assert rows[1] == pytest.approx([step, 0, 0], abs=1e-6), "red must vary fastest"
+        assert rows[4] == pytest.approx([0, step, 0], abs=1e-6), "green next"
+        assert rows[16] == pytest.approx([0, 0, step], abs=1e-6), "blue slowest"
+
+    def test_cube_carries_the_curve_on_every_axis(self, tmp_path):
+        curve = Lut(np.linspace(0, 1, 256) ** 2.0)
+        _, rows = self.cube_rows(curve.export_cube(tmp_path / "c.cube", size=16))
+        axis = np.linspace(0, 1, 16)
+        expected = curve.apply(axis)
+        assert rows[:16, 0] == pytest.approx(expected, abs=1e-5)  # red sweep
+        assert rows[::16 * 16, 2] == pytest.approx(expected, abs=1e-5)  # blue sweep
+
+    def test_cube_grid_resolves_the_shipped_curve(self, tmp_path):
+        """The default size has to survive the shape a real correction actually takes.
+
+        The measured cyanotype curve lifts input 17 to output 81 — nearly vertical at the
+        foot, which is what makes the grid size matter. A 16-point cube misses it by 8
+        code values and 32 by 2; the default must stay under one. Tested against the
+        shipped profile rather than an invented curve, so it tracks whatever is really
+        being exported.
+        """
+        from cyanoneg.profiles import PROFILE_DIR, Profile
+
+        curve = Profile.load(PROFILE_DIR / "CassArt 300 Sm.json").lut
+        _, rows = self.cube_rows(curve.export_cube(tmp_path / "c.cube"))
+        size = round(len(rows) ** (1 / 3))
+        assert size == CUBE_SIZE
+        fine = np.linspace(0, 1, 2001)
+        grid = np.linspace(0, 1, size)
+        error = np.abs(np.interp(fine, grid, curve.apply(grid)) - curve.apply(fine)).max()
+        assert error * 255 < 1.0, f"{error * 255:.2f} code values at size {size}"
+
+    def test_cube_size_limits(self, tmp_path):
+        for bad in (1, 257):
+            with pytest.raises(ValueError, match="between 2 and 256"):
+                Lut.identity().export_cube(tmp_path / "x.cube", size=bad)

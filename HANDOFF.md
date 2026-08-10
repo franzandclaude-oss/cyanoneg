@@ -87,7 +87,7 @@ The one claim the tests cannot cover. Both files sit next to the profile:
 - `profiles/CassArt 300 Sm.cube` → Adjustments → Color Lookup → Load 3D LUT
 - `profiles/CassArt 300 Sm.acv` → Adjustments → Curves → ⚙ → Load Preset
 
-The `.cube` is the faithful one — the full 256-entry table. The `.acv` holds 19 points, the
+The `.cube` is the faithful one — a 64x64x64 grid, within 0.6 of a code value of the curve. The `.acv` holds 19 points, the
 most Photoshop allows, and your curve is steep enough at the bottom that it misses the deep
 shadows by up to 5 L\*. **Use the `.acv` to look at the curve's shape, not to print through.**
 

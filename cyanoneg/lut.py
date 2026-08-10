@@ -21,6 +21,11 @@ import numpy as np
 
 DEFAULT_SIZE = 256
 
+#: Points per axis in an exported .cube. 64 keeps this project's curves within about half
+#: an 8-bit code value; the usual 32 costs 2, which is visible in a smooth gradient because
+#: the correction is so steep at the foot.
+CUBE_SIZE = 64
+
 
 # --------------------------------------------------------------------------- PCHIP core
 
@@ -142,12 +147,33 @@ class Lut:
 
     # ----------------------------------------------------------------- export
 
-    def export_cube(self, path: str | Path, title: str = "cyanoneg") -> Path:
-        """Write a 1D .cube file (loads in Photoshop via Color Lookup)."""
+    def export_cube(self, path: str | Path, title: str = "cyanoneg", size: int = CUBE_SIZE) -> Path:
+        """Write a 3D .cube file, for Photoshop's Color Lookup.
+
+        A tone curve is one-dimensional, and the .cube format does define ``LUT_1D_SIZE``
+        for exactly that — but Photoshop's Color Lookup only reads 3D LUTs and refuses a 1D
+        file outright. So the curve is written as a cube with the same curve on each axis,
+        which is what every consumer of this format expects.
+
+        ``size`` is points per axis. The default samples this project's curves to well
+        under one 8-bit code value; the correction is steep at the foot (a measured paper
+        lifted input 17 to output 81), so a coarser grid visibly clips the shadows —
+        16 points misses by 8 code values, 32 by 2, 64 by half of one.
+        """
+        if not 2 <= size <= 256:
+            raise ValueError(f"a .cube holds between 2 and 256 points per axis, got {size}")
         path = Path(path)
-        lines = [f'TITLE "{title}"', f"LUT_1D_SIZE {self.size}", ""]
-        lines += [f"{v:.6f} {v:.6f} {v:.6f}" for v in np.clip(self.values, 0.0, 1.0)]
-        path.write_text("\n".join(lines) + "\n", encoding="ascii")
+        grid = self.apply(np.linspace(0.0, 1.0, size))
+        grid = np.clip(grid, 0.0, 1.0)
+
+        # .cube orders entries with red varying fastest, then green, then blue.
+        red = np.tile(grid, size * size)
+        green = np.tile(np.repeat(grid, size), size)
+        blue = np.repeat(grid, size * size)
+
+        header = f'TITLE "{title}"\nLUT_3D_SIZE {size}\nDOMAIN_MIN 0.0 0.0 0.0\nDOMAIN_MAX 1.0 1.0 1.0\n\n'
+        body = "\n".join(f"{r:.6f} {g:.6f} {b:.6f}" for r, g, b in zip(red, green, blue))
+        path.write_text(header + body + "\n", encoding="ascii")
         return path
 
     def export_acv(self, path: str | Path, points: int = 16) -> Path:
