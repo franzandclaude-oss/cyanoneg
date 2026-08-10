@@ -78,8 +78,15 @@ def scan_of(
     margin_px: int = 120,
     orientation: str = "as-is",
     seed: int = 5,
+    colour: bool = False,
 ) -> Image:
-    """Turn a rendered print into a plausible scanner output image (sRGB, mono)."""
+    """Turn a rendered print into a plausible scanner output image (sRGB).
+
+    ``colour=True`` tints the result towards Prussian blue at constant luminance, which is
+    what a real scan of a cyanotype looks like. It stays off by default so the tonal tests
+    keep working on the one quantity they care about; the analysis reads luminance, and the
+    tint is built to leave that untouched, so either form gives identical tonal results.
+    """
     rng = np.random.default_rng(seed)
     h, w = print_y.shape
     sw, sh = int(w * scale), int(h * scale)
@@ -109,7 +116,15 @@ def scan_of(
         y = _gaussian_blur(y, blur_px)
     y = np.clip(y + rng.normal(0, noise, y.shape), 0.0, 1.0)
 
-    encoded = from_linear(y.astype(np.float32), "srgb")
+    if colour:
+        # Prussian blue, strongest where the print is darkest, fading to neutral at paper.
+        # Rescaled so luminance is exactly the mono value: the tint must not move the tone.
+        luma = np.array([0.2126, 0.7152, 0.0722])
+        blue, paper = np.array([0.10, 0.45, 1.00]), np.ones(3)
+        weight = np.clip(1.0 - y / max(y.max(), 1e-6), 0.0, 1.0)[..., None]
+        hue = paper + weight * (blue - paper)
+        y = hue * (y / np.maximum(hue @ luma, 1e-6))[..., None]
+    encoded = from_linear(np.clip(y, 0.0, 1.0).astype(np.float32), "srgb")
     if orientation == "rot90":
         encoded = np.rot90(encoded, 1)
     elif orientation == "rot180":

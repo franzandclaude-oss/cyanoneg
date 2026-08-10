@@ -91,6 +91,45 @@ def measured_response(profile: Profile) -> Lut:
     return Lut(pchip_eval(xs[keep], ys[keep], grid)).enforce_monotonic()
 
 
+def measured_colour(profile: Profile) -> tuple[np.ndarray, np.ndarray] | None:
+    """Lightness fraction → the paper's own linear-light colour, from the wedge patches.
+
+    ``None`` when the patches carry no colour, which is every profile measured before
+    ``analyze.py`` started recording it.
+
+    Prussian blue does not fade towards paper along a straight line between two endpoints.
+    Measured on this paper, a tone at L* 50 is still about 180% as blue-minus-red as it is
+    luminous, where a linear blend of the endpoints gives 30%. That is the difference
+    between a proof that looks like a cyanotype and one that looks like a grey print, and
+    no amount of choosing better endpoint constants fixes the shape between them. So the
+    shape is measured rather than modelled — the wedge already prints 32 levels of exactly
+    this, and reading its colour costs nothing.
+    """
+    patches = (profile.measurements or {}).get("raw_patches") or []
+    with_rgb = [p for p in patches if isinstance(p.get("rgb"), (list, tuple)) and len(p["rgb"]) == 3]
+    if len(with_rgb) < 3:
+        return None
+
+    by_value: dict[int, list[list[float]]] = {}
+    lstar_by_value: dict[int, list[float]] = {}
+    for p in with_rgb:
+        by_value.setdefault(int(p["value"]), []).append([float(v) for v in p["rgb"]])
+        lstar_by_value.setdefault(int(p["value"]), []).append(float(p["lstar"]))
+
+    values = sorted(by_value)
+    lstars = np.array([np.mean(lstar_by_value[v]) for v in values])
+    rgbs = np.array([np.mean(by_value[v], axis=0) for v in values], dtype=np.float32)
+    black, paper = lstars[0], lstars[-1]
+    if paper - black < 5.0:
+        return None
+
+    fractions = np.clip((lstars - black) / (paper - black), 0.0, 1.0)
+    order = np.argsort(fractions)
+    fractions, rgbs = fractions[order], rgbs[order]
+    keep = np.concatenate(([True], np.diff(fractions) > 1e-6))  # np.interp needs strict increase
+    return fractions[keep].astype(np.float32), rgbs[keep]
+
+
 def measured_endpoints(profile: Profile) -> tuple[float, float]:
     """The paper's measured (Dmax, paper-white) lightness in L*.
 
@@ -139,22 +178,30 @@ def soft_proof(negative: Image, profile: Profile) -> Image:
 
     fraction = response.apply(ink.astype(np.float32))
 
-    # The response is a fraction of the paper's measured *lightness* range, so it has to be
-    # interpolated in L* and only then turned back into light. Blending linear reflectance
-    # with an L* fraction — which this did until two prints showed it up — puts a mid tone
-    # at 50% luminance where L* says 18%, and the proof came out ~14 L* too light through
-    # the midtones while matching perfectly at both ends.
-    dmax_lstar, paper_lstar = measured_endpoints(profile)
-    lstar = dmax_lstar + fraction * (paper_lstar - dmax_lstar)
-    luminance = _from_lstar(lstar)
-
-    # Hue comes from the constants, tone from the measurement: take the blue→paper ramp for
-    # its colour and rescale it to the luminance the paper actually produces.
-    paper = np.asarray(PAPER_RGB, dtype=np.float32)
-    blue = np.asarray(BLUE_RGB, dtype=np.float32)
-    hue = blue[None, None, :] + fraction[..., None] * (paper - blue)[None, None, :]
-    hue_luminance = np.maximum(hue @ _LUMA, 1e-6)
-    reflect = hue * (luminance / hue_luminance)[..., None]
+    colour = measured_colour(profile)
+    if colour is not None:
+        # Best case: the paper's own colour, read off the wedge. Interpolating the measured
+        # patches gives the right lightness and the right blue at once, with nothing modelled.
+        fractions, rgbs = colour
+        reflect = np.stack(
+            [np.interp(fraction, fractions, rgbs[:, i]) for i in range(3)], axis=-1
+        ).astype(np.float32)
+    else:
+        # Profiles measured before analyze.py recorded patch colour. Tone still comes from
+        # the measurement; only the hue is approximated, and it will read too neutral in the
+        # midtones. Re-run the wedge analysis to replace this with the real thing.
+        #
+        # The response is a fraction of the paper's measured *lightness* range, so it must be
+        # interpolated in L* and only then turned back into light. Blending linear reflectance
+        # with an L* fraction — which this did until two prints showed it up — puts a mid tone
+        # at 50% luminance where L* says 18%, leaving the proof ~14 L* too light through the
+        # midtones while matching perfectly at both ends.
+        dmax_lstar, paper_lstar = measured_endpoints(profile)
+        luminance = _from_lstar(dmax_lstar + fraction * (paper_lstar - dmax_lstar))
+        paper = np.asarray(PAPER_RGB, dtype=np.float32)
+        blue = np.asarray(BLUE_RGB, dtype=np.float32)
+        hue = blue[None, None, :] + fraction[..., None] * (paper - blue)[None, None, :]
+        reflect = hue * (luminance / np.maximum(hue @ _LUMA, 1e-6))[..., None]
     return Image(
         data=from_linear(np.clip(reflect, 0.0, 1.0), negative.space),
         space=negative.space,

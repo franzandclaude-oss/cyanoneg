@@ -361,10 +361,17 @@ def _refine_centre(y_full: np.ndarray, cx: float, cy: float, fid_px: int) -> tup
 def sample_cells(scan: Image, sidecar: dict, frame: Frame, quantity: str = "lstar") -> list[dict]:
     """Median-sample every sidecar cell through the detected homography.
 
-    Returns one record per cell: the sidecar cell plus ``lstar``, ``y_linear`` and
-    ``spread`` (inter-quartile range of the sample window, for quality flags).
+    Returns one record per cell: the sidecar cell plus ``lstar``, ``y_linear``, ``rgb``
+    and ``spread`` (inter-quartile range of the sample window, for quality flags).
+
+    ``rgb`` is the patch's own linear-light colour. The tonal analysis has no use for it —
+    it works in luminance throughout — but the soft proof does: predicting what a print
+    looks like means predicting its colour, and Prussian blue desaturates towards paper
+    along a curve no two-endpoint blend reproduces. Measuring it here costs nothing and
+    means the proof never has to model it.
     """
     y_full = luminance(scan)
+    rgb_full = to_linear(scan.data, scan.space) if scan.data.ndim == 3 else None
     cells = sidecar["cells"]
     centres_print = np.array(
         [(c["x_px"] + c["w_px"] / 2.0, c["y_px"] + c["h_px"] / 2.0) for c in cells]
@@ -395,6 +402,9 @@ def sample_cells(scan: Image, sidecar: dict, frame: Frame, quantity: str = "lsta
         record["y_linear"] = y_med
         record["lstar"] = float(lightness(np.array([y_med]))[0])
         record["spread"] = float(q3 - q1)
+        if rgb_full is not None:
+            patch = rgb_full[yc - half : yc + half + 1, xc - half : xc + half + 1]
+            record["rgb"] = [float(v) for v in np.median(patch.reshape(-1, 3), axis=0)]
         results.append(record)
     return results
 
@@ -524,7 +534,8 @@ def analyze_wedge(scan_path: str | Path, sidecar_path: str | Path, *, space=None
     lut = derive_correction(measured_in, measured_out)
     raw_patches = [
         {"value": s["value"], "row": s["row"], "col": s["col"], "lstar": round(s["lstar"], 3),
-         "y_linear": round(s["y_linear"], 6), "spread": round(s["spread"], 6)}
+         "y_linear": round(s["y_linear"], 6), "spread": round(s["spread"], 6),
+         **({"rgb": [round(v, 6) for v in s["rgb"]]} if "rgb" in s else {})}
         for s in samples
     ]
     return WedgeAnalysis(

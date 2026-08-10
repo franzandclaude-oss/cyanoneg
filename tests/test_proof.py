@@ -10,6 +10,7 @@ from cyanoneg.profiles import PROFILE_DIR, Profile
 from cyanoneg.proof import (
     ProofUnavailable,
     can_proof,
+    measured_colour,
     measured_endpoints,
     measured_response,
     soft_proof,
@@ -157,6 +158,87 @@ class TestPredictedLightness:
     def test_endpoints_need_measurements_too(self):
         with pytest.raises(ProofUnavailable):
             measured_endpoints(Profile.load(PROFILE_DIR / "linear.json"))
+
+
+class TestMeasuredColour:
+    """A proofed cyanotype has to look like a cyanotype, not a grey print.
+
+    Prussian blue desaturates towards paper along a curve that no blend of two endpoints
+    reproduces. Measured on this paper, a tone at L* 50 is still ~170% as blue-minus-red as
+    it is luminous; a linear blend gives 30%, which on screen is indistinguishable from
+    grey. Steven spotted that by looking at it, after the tonal fix had already landed.
+    """
+
+    def chroma(self, rgb):
+        """Blue minus red, relative to luminance — how blue a tone is, independent of how light."""
+        luma = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+        return (rgb[..., 2] - rgb[..., 0]) / np.maximum(rgb @ luma, 1e-6)
+
+    def test_the_shipped_paper_carries_measured_colour(self):
+        profile = Profile.load(PROFILE_DIR / "CassArt 300 Sm.json")
+        colour = measured_colour(profile)
+        assert colour is not None, "the calibration should carry patch colour"
+        fractions, rgbs = colour
+        assert len(fractions) >= 8 and np.all(np.diff(fractions) > 0)
+
+    def proofed_ramp(self, profile):
+        """Proof a full 0→1 ramp and return its (L*, chroma) — what ends up on screen.
+
+        Deliberately measured on `soft_proof`'s own output. An earlier version of these
+        tests read the profile's colour table directly, which passed perfectly with the
+        proof still rendering grey, because the table was never the broken part.
+        """
+        from cyanoneg.imageio import to_linear
+
+        ink = np.tile(np.linspace(0.0, 1.0, 256, dtype=np.float32), (8, 1))
+        negative = Image(np.stack([1.0 - ink] * 3, axis=-1), "srgb", ppi=300)
+        proof = soft_proof(negative, profile)
+        row = to_linear(proof.data[proof.data.shape[0] // 2], proof.space)[::-1]
+        luma = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+        y = np.clip(row @ luma, 1e-6, 1.0)
+        lstar = np.where(y > 0.008856, 116 * np.cbrt(y) - 16, 903.3 * y)
+        return lstar, self.chroma(row)
+
+    def test_a_proofed_midtone_is_still_blue(self):
+        """The failure was invisible to every other assertion: tonally correct, and grey.
+
+        Measured on this paper a tone near L* 55 runs above 100% blue-minus-red relative to
+        its luminance. The two-endpoint blend renders the same tone at about 14%, which on
+        screen is indistinguishable from grey — which is exactly how it was spotted.
+        """
+        profile = Profile.load(PROFILE_DIR / "CassArt 300 Sm.json")
+        lstar, chroma = self.proofed_ramp(profile)
+        mid = np.argmin(np.abs(lstar - 55.0))
+        assert 50.0 < lstar[mid] < 60.0, "the ramp should cover the midtones"
+        assert chroma[mid] > 0.6, f"midtone proofed at {chroma[mid]:.2f} chroma — nearly grey"
+
+    def test_the_proof_is_blue_in_the_shadows_and_neutral_on_paper(self):
+        profile = Profile.load(PROFILE_DIR / "CassArt 300 Sm.json")
+        lstar, chroma = self.proofed_ramp(profile)
+        assert chroma[np.argmin(lstar)] > 1.5
+        assert chroma[np.argmax(lstar)] < 0.2
+
+    def test_colour_falls_off_towards_paper(self):
+        """Blue at the dark end, near-neutral at bare paper, monotonically between."""
+        profile = Profile.load(PROFILE_DIR / "CassArt 300 Sm.json")
+        fractions, rgbs = measured_colour(profile)
+        c = self.chroma(rgbs)
+        assert c[0] > 1.5, "Dmax must be strongly blue"
+        assert c[-1] < 0.15, "bare paper must be near neutral"
+        assert np.all(np.diff(c) < 0.1), "chroma must fall as the tone lightens"
+
+    def test_profiles_without_patch_colour_still_proof(self):
+        """Every profile measured before analyze.py recorded colour must keep working."""
+        profile = measured_profile()
+        assert measured_colour(profile) is None
+        assert can_proof(profile)
+        assert soft_proof(
+            Image(np.full((4, 4, 3), 0.5, dtype=np.float32), "srgb", ppi=300), profile
+        ) is not None
+
+    def test_too_few_coloured_patches_falls_back(self):
+        patches = [{"value": v, "lstar": 40.0 + v, "rgb": [0.1, 0.2, 0.3]} for v in range(2)]
+        assert measured_colour(measured_profile(measurements={"raw_patches": patches})) is None
 
 
 class TestProofRendering:

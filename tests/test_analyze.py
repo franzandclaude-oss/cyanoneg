@@ -109,6 +109,42 @@ class TestWedgeAnalysis:
         assert 1.2 <= result.density_range <= 1.45
         assert not result.warnings
 
+    def test_patches_record_their_colour(self, wedge, wedge_print, tmp_path):
+        """Every patch keeps its own linear RGB, not just its lightness.
+
+        The tonal analysis never looks at it — it works in luminance throughout — but the
+        soft proof does. Prussian blue fades towards paper along a curve that no blend of
+        two endpoints reproduces, and modelling it produced a proof that was tonally
+        correct and looked grey. Measuring it here is what removed the model.
+        """
+        sidecar = tmp_path / "sc.json"
+        sidecar.write_text(json.dumps(wedge.sidecar))
+        scan = tmp_path / "colour.tif"
+        save_tiff(scan, scan_of(wedge_print, colour=True))
+        result = analyze_wedge(scan, sidecar)
+
+        assert all("rgb" in p for p in result.raw_patches), "colour must be recorded per patch"
+        assert all(len(p["rgb"]) == 3 for p in result.raw_patches)
+        by_value = sorted(result.raw_patches, key=lambda p: p["value"])
+        dark, light = np.array(by_value[0]["rgb"]), np.array(by_value[-1]["rgb"])
+        assert dark[2] - dark[0] > 0.05, "the dark end must read blue, not neutral"
+        assert light[2] - light[0] < dark[2] - dark[0], "paper must be less blue than Dmax"
+
+    def test_a_colour_scan_measures_the_same_tones_as_a_mono_one(self, wedge, wedge_print, tmp_path):
+        """Recording colour must not disturb the tonal result, or it buys one thing by
+        quietly breaking another. The tint is luminance-preserving by construction; this
+        checks that end to end rather than trusting it."""
+        sidecar = tmp_path / "sc.json"
+        sidecar.write_text(json.dumps(wedge.sidecar))
+        results = []
+        for name, colour in (("mono.tif", False), ("colour.tif", True)):
+            path = tmp_path / name
+            save_tiff(path, scan_of(wedge_print, colour=colour))
+            results.append(analyze_wedge(path, sidecar))
+        mono, tinted = results
+        assert np.abs(mono.lut.values - tinted.lut.values).max() < 0.01
+        assert abs(mono.density_range - tinted.density_range) < 0.02
+
     @pytest.mark.parametrize("orientation", ["rot90", "rot180", "rot270", "mirror"])
     def test_any_scan_orientation_recovered(self, wedge, wedge_print, tmp_path, orientation):
         sidecar = tmp_path / "sc.json"
