@@ -35,27 +35,22 @@ no longer describes what the printer does.
 
 ---
 
-## The three jobs left
+## Settled: no lamp warm-up
 
-### 1. Settle the lamp warm-up — decide before printing anything else
+**Decided 10 August 2026.** Expose cold, straight from switch-on. `13:30` stands exactly as
+measured — the exposure strip that produced it was shot cold, so nothing needs redoing.
 
-Print 2 came out veiled: paper white L\* 96.1 against print 1's 99.8, and density range down
-from 1.117 to 0.984. Shadows identical in both. That pattern — highlights lifted, shadows
-unmoved — is what more UV does once the shadows are already at Dmax.
+The reasoning, in case it is ever revisited: a UV LED reaches near-full output in seconds,
+so a warm-up buys consistency that is already there. Print 2 appears to have had one and
+lost 0.13 of density range for it — paper white L\* 96.1 against print 1's 99.8, shadows
+unchanged in both. Highlights lifted with shadows unmoved is what extra dose does once the
+shadows are already at Dmax, and 0.13 is a lot on a paper with only 1.1 to give.
 
-The likely cause is that one print got the 60-second lamp warm-up and the other did not.
+Recorded in the profile as `warmup_seconds: 0`.
 
-**Decide one way and stay with it.** The profile records a warm-up, but the exposure strip
-that produced 13:30 was shot *without* one. So:
+## The two jobs left
 
-- **No warm-up** — 13:30 stands, nothing to redo.
-- **Warm-up** — adopt it, then re-shoot the exposure strip, because your SPE was not measured
-  under those conditions. Expect it to come out shorter.
-
-What you must not do is one print each way. It costs about 0.13 of density range on a paper
-that only has 1.1 to give.
-
-### 2. Print a wedge strip alongside a photograph
+### 1. Print a wedge strip alongside a photograph
 
 This is the measurement that closes the last open question. The calibration sheet reached
 Dmax L\* 32; both prints only reached L\* 37–39. That gap is almost certainly ordinary
@@ -85,7 +80,7 @@ coating varies between sessions and that is worth knowing before blaming anythin
 **Scan it the same way as the calibration sheets** — SilverFast raw, converted in Photoshop.
 A different scan path is the one thing that would make the comparison meaningless.
 
-### 3. Check the Photoshop exports
+### 2. Check the Photoshop exports
 
 The one claim the tests cannot cover. Both files sit next to the profile:
 
@@ -139,8 +134,8 @@ In the order worth checking:
 
 1. **Driver settings** — the three above. Silently reset by a driver update.
 2. **Which profile** — the Process tab must say `CassArt 300 Sm`, not `linear`.
-3. **Exposure** — 13:30, 350 mm, and the warm-up decision from job 1.
+3. **Exposure** — 13:30, 350 mm, exposed cold - no warm-up.
 4. **The paper** — a new batch or a different coating session is the usual suspect, which is
-   what job 2 measures.
+   what job 1 measures.
 5. **The scan** — if only the *measurements* look wrong and the print looks fine, suspect
    the scan path before the process.

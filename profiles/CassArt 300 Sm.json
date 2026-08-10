@@ -27,9 +27,10 @@
     "uv_source": "100W UV LED in light box",
     "uv_wavelength_nm": "390-400 (from the lamp's own marking, read 2026-08-09). Recorded as the stated range rather than collapsed to 395, because that is what is actually known. Cyanotype absorbs more strongly nearer 365, so this lamp does less work per watt - consistent with an SPE of 13:30 at 350mm. A replacement lamp at a different wavelength invalidates spe_seconds.",
     "lamp_distance_mm": 350,
-    "warmup_seconds": 60,
+    "warmup_seconds": 0,
     "spe_seconds": 810,
-    "spe_note": "read by eye from the 8-zone strip, dry: zones 6, 7 and 8 matched, zone 5 (9:30) still lighter, so the plateau begins at zone 6 = 13:30"
+    "spe_note": "read by eye from the 8-zone strip, dry: zones 6, 7 and 8 matched, zone 5 (9:30) still lighter, so the plateau begins at zone 6 = 13:30",
+    "warmup_note": "Decided 2026-08-10: no warm-up. The strip that gave spe_seconds was shot cold, so 13:30 stands as measured. A UV LED reaches near-full output in seconds, and the one print that appears to have had a warm-up lost 0.13 of density range - paper white L* 96.1 against 99.8, shadows unchanged, which is what extra dose does once the shadows are already at Dmax."
   },
   "lut": {
     "size": 256,
