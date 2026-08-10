@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import queue
 import subprocess
+import sys
 import threading
 import traceback
 from pathlib import Path
@@ -53,6 +54,24 @@ from ..profiles import PROFILE_DIR, Profile, list_profiles
 from ..targets import blocker_grid, exposure_strip, step_wedge
 from . import theme
 from .scroll import ScrollableFrame
+
+
+#: What the file manager is called, so the button does not say "Explorer" on a Mac.
+FILE_MANAGER = {"win32": "Explorer", "darwin": "Finder"}.get(sys.platform, "folder")
+
+
+def reveal_command(path: Path) -> list[str]:
+    """The command that opens a file manager with `path` selected.
+
+    Windows' /select needs the comma glued to the flag and returns a non-zero exit code
+    even on success, so callers must not check it. Linux has no standard "select this
+    file" verb, so the containing folder is opened instead.
+    """
+    if sys.platform == "win32":
+        return ["explorer", "/select,", str(path)]
+    if sys.platform == "darwin":
+        return ["open", "-R", str(path)]
+    return ["xdg-open", str(path.parent)]
 
 
 def output_for_source(source: str | Path, chosen: str = "") -> str:
@@ -321,7 +340,7 @@ class App:
         self.save_button = ttk.Button(row, text="Save negative", command=self._save_negative, state=DISABLED)
         self.save_button.pack(side=LEFT, fill=X, expand=True)
         self.reveal_button = ttk.Button(
-            row, text="Show in Explorer", command=self._show_in_explorer, state=DISABLED
+            row, text=f"Show in {FILE_MANAGER}", command=self._show_in_explorer, state=DISABLED
         )
         self.reveal_button.pack(side=LEFT, fill=X, expand=True, padx=(theme.GAP, 0))
 
@@ -390,8 +409,7 @@ class App:
     def _show_in_explorer(self) -> None:
         if self._saved_path is None or not self._saved_path.exists():
             return
-        # /select returns a non-zero exit code even when it works, so the result is ignored.
-        subprocess.run(["explorer", "/select,", str(self._saved_path)], check=False)
+        subprocess.run(reveal_command(self._saved_path), check=False)
 
     def _update_size_note(self) -> None:
         """Show the print size this image will actually come out at, before committing."""

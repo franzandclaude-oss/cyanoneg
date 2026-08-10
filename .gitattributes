@@ -1,0 +1,19 @@
+# Line endings, settled once.
+#
+# Without this, Windows checks files out as CRLF and macOS as LF, so the first commit from
+# the other machine rewrites every line of every file it touches. The real change is then
+# buried in thousands of invisible ones, and two machines editing the same file conflict on
+# lines neither of them meant to change.
+#
+# LF in the repository, whatever the working copy uses.
+* text=auto eol=lf
+
+# Binary, so git never rewrites a byte of them.
+*.tif binary
+*.tiff binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.acv binary
+*.ico binary
+*.lnk binary

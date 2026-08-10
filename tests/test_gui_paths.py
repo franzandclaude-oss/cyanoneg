@@ -15,7 +15,39 @@ from pathlib import Path
 
 import pytest
 
-from cyanoneg.gui.app import App, output_for_source
+from cyanoneg.gui.app import App, output_for_source, reveal_command
+
+
+class TestRevealCommand:
+    """Opening a file manager is the one place this GUI touches the operating system.
+
+    It fails silently when wrong — the button does nothing and nothing is logged — so the
+    per-platform commands are checked here rather than discovered on the day someone opens
+    the project on a different machine.
+    """
+
+    @pytest.mark.parametrize(
+        "platform,expected",
+        [
+            ("win32", ["explorer", "/select,", r"C:\pics\barn_negative.tif"]),
+            ("darwin", ["open", "-R", r"C:\pics\barn_negative.tif"]),
+        ],
+    )
+    def test_each_platform_gets_its_own_command(self, monkeypatch, platform, expected):
+        monkeypatch.setattr("cyanoneg.gui.app.sys.platform", platform)
+        assert reveal_command(Path(r"C:\pics\barn_negative.tif")) == expected
+
+    def test_linux_opens_the_folder_since_it_cannot_select(self, monkeypatch):
+        monkeypatch.setattr("cyanoneg.gui.app.sys.platform", "linux")
+        command = reveal_command(Path("/home/s/pics/barn_negative.tif"))
+        assert command[0] == "xdg-open"
+        assert command[1].endswith("pics"), "no standard select verb, so open the folder"
+
+    def test_the_windows_flag_keeps_its_comma(self, monkeypatch):
+        """`explorer /select, path` only works with the comma attached to the flag;
+        `/select` alone opens the file instead of showing it in its folder."""
+        monkeypatch.setattr("cyanoneg.gui.app.sys.platform", "win32")
+        assert reveal_command(Path("x.tif"))[1] == "/select,"
 
 
 class TestOutputPath:
