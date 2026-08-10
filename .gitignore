@@ -37,3 +37,16 @@ EDN_RGB_256_2.tif
 *Wedge*.tif
 *Exposure*.tif
 *_scan.tif
+
+# Photographs, negatives and scans of finished prints — everything image-shaped.
+#
+# Deliberately a blanket rule rather than a list of the ones seen so far. `git add -A` once
+# swept 200MB of Steven's own photographs into a commit, and what caught it was GitHub's
+# file-size limit rather than anything here. A rule that only names known files fails
+# exactly when a new one appears, which is the moment it matters. Anything genuinely
+# belonging in the repository can be added with `git add -f`.
+*.tif
+*.tiff
+*.jpg
+*.jpeg
+*.png

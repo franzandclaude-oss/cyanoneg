@@ -7,7 +7,13 @@ from cyanoneg.imageio import Image
 from cyanoneg.lut import Lut
 from cyanoneg.pipeline import PrintSize, make_negative
 from cyanoneg.profiles import PROFILE_DIR, Profile
-from cyanoneg.proof import ProofUnavailable, can_proof, measured_response, soft_proof
+from cyanoneg.proof import (
+    ProofUnavailable,
+    can_proof,
+    measured_endpoints,
+    measured_response,
+    soft_proof,
+)
 
 PAPER_LSTAR, BLACK_LSTAR = 93.0, 22.0
 
@@ -84,6 +90,75 @@ class TestResponseRecovery:
         assert np.all(np.diff(measured_response(measured_profile()).values) >= 0)
 
 
+class TestPredictedLightness:
+    """The proof must land tones where the measurement says, not merely in the right order.
+
+    Every other test in this file compares the proof to itself — is it monotonic, are
+    shadows bluer than highlights, does the correction flatten it. All of those passed
+    while the proof was blending linear reflectance with an L* fraction, which put mid
+    tones about 14 L* too light. It took two prints on paper to notice. These tests anchor
+    the proof to an absolute quantity instead, which is what makes the error visible
+    without spending film.
+    """
+
+    def ramp_negative(self, profile):
+        """A negative whose ink coverage sweeps 0 → 1, so the proof's whole range is seen."""
+        ink = np.tile(np.linspace(0.0, 1.0, 256, dtype=np.float32), (8, 1))
+        return Image(np.stack([1.0 - ink] * 3, axis=-1), "srgb", ppi=300)
+
+    def proofed_lstar(self, profile):
+        from cyanoneg.imageio import to_linear
+
+        proof = soft_proof(self.ramp_negative(profile), profile)
+        row = to_linear(proof.data[proof.data.shape[0] // 2], proof.space)
+        y = np.clip(row @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32), 0, 1)
+        return np.where(y > 0.008856, 116 * np.cbrt(y) - 16, 903.3 * y)[::-1]  # un-mirror
+
+    def linear_profile(self):
+        """Patches whose lightness rises linearly with value, so the response is identity."""
+        patches = [
+            {"value": v, "lstar": BLACK_LSTAR + (v / 255) * (PAPER_LSTAR - BLACK_LSTAR)}
+            for v in range(256)
+        ]
+        return measured_profile(measurements={"raw_patches": patches})
+
+    def test_lightness_is_linear_in_the_measured_response(self):
+        """With an identity response, predicted L* must be a straight line.
+
+        This is the assertion the old blend fails outright: interpolating reflectance by an
+        L* fraction bows the line by ~14 L* in the middle while still hitting both ends,
+        which is exactly why the endpoints looked right on paper and the midtones did not.
+        """
+        lstar = self.proofed_lstar(self.linear_profile())
+        straight = np.linspace(lstar[0], lstar[-1], len(lstar))
+        assert np.abs(lstar - straight).max() < 1.5
+
+    def test_the_ends_are_the_papers_measured_ends(self):
+        """Dmax and paper white come from the patches, not from the Prussian blue constant.
+
+        The constant is L* 27; hand-coated paper measured L* 32-38. Proofing against the
+        constant makes every shadow look deeper than the paper can actually print.
+        """
+        profile = self.linear_profile()
+        dmax, paper = measured_endpoints(profile)
+        assert (dmax, paper) == pytest.approx((BLACK_LSTAR, PAPER_LSTAR), abs=0.1)
+        lstar = self.proofed_lstar(profile)
+        assert lstar[0] == pytest.approx(BLACK_LSTAR, abs=1.0)
+        assert lstar[-1] == pytest.approx(PAPER_LSTAR, abs=1.0)
+
+    def test_a_darker_paper_proofs_darker(self):
+        """Two papers differing only in Dmax must proof differently all the way up."""
+        deep = [{"value": v, "lstar": 15.0 + (v / 255) * (PAPER_LSTAR - 15.0)} for v in range(256)]
+        shallow = [{"value": v, "lstar": 45.0 + (v / 255) * (PAPER_LSTAR - 45.0)} for v in range(256)]
+        a = self.proofed_lstar(measured_profile(measurements={"raw_patches": deep}))
+        b = self.proofed_lstar(measured_profile(measurements={"raw_patches": shallow}))
+        assert (b[:-8] > a[:-8]).all(), "the shallower paper must proof lighter throughout"
+
+    def test_endpoints_need_measurements_too(self):
+        with pytest.raises(ProofUnavailable):
+            measured_endpoints(Profile.load(PROFILE_DIR / "linear.json"))
+
+
 class TestProofRendering:
     @pytest.fixture
     def ramp_negative(self):
@@ -131,28 +206,28 @@ class TestProofRendering:
         """The point of calibration: with the derived correction applied, the proofed
         print's lightness should track the positive far more linearly than without it.
 
-        Measured on print lightness recovered from the proof, not on its encoded pixels —
-        reflectance is linear in lightness, but the sRGB encoding of it is not, so a
-        perfectly linearised print still has a curved code-value ramp.
+        Measured as L*, which is what "linear" means for a print someone looks at, and how
+        the real prints were checked against this prediction. This test used to recover
+        lightness as a fraction of the way from Prussian blue to paper *in reflectance* —
+        which was the proof's own broken assumption, so the test could never have
+        disagreed with it.
         """
         from cyanoneg.imageio import to_linear
         from cyanoneg.lut import derive_correction
-        from cyanoneg.proof import BLUE_RGB, PAPER_RGB
 
         levels = np.linspace(0, 1, 256)
         correction = derive_correction(levels, response(levels))
         ramp = np.tile(np.linspace(0.0, 1.0, 256, dtype=np.float32), (48, 1))
         source = Image(np.stack([ramp] * 3, axis=-1), "srgb", ppi=300)
-
-        paper = np.asarray(PAPER_RGB, dtype=np.float32)
-        blue = np.asarray(BLUE_RGB, dtype=np.float32)
+        luma = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
         def linearity_error(profile):
             negative = make_negative(source, profile, PrintSize(60, 12))
             proof = soft_proof(negative, profile)
             row = to_linear(proof.data[proof.data.shape[0] // 2], proof.space)
-            lightness = ((row - blue) / (paper - blue)).mean(axis=-1)
-            target = np.linspace(lightness[0], lightness[-1], len(lightness))
-            return float(np.abs(lightness - target).max())
+            y = np.clip(row @ luma, 0.0, 1.0)
+            lstar = np.where(y > 0.008856, 116 * np.cbrt(y) - 16, 903.3 * y)
+            target = np.linspace(lstar[0], lstar[-1], len(lstar))
+            return float(np.abs(lstar - target).max())
 
         assert linearity_error(measured_profile(lut=correction)) < linearity_error(measured_profile()) / 2

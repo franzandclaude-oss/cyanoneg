@@ -22,14 +22,30 @@ from .imageio import Image, from_linear
 from .lut import Lut, pchip_eval
 from .profiles import Profile
 
-#: Prussian blue endpoints in linear light: paper white → full cyanotype Dmax.
-#: Approximate but stable; the proof's job is relative tonality, not colorimetry.
+#: Prussian blue endpoints in linear light: paper white → full cyanotype Dmax. These now
+#: supply *hue* only — the lightness of a proofed tone comes from the profile's measured
+#: patches, which know what the paper actually did.
 PAPER_RGB = (0.97, 0.97, 0.94)
 BLUE_RGB = (0.016, 0.055, 0.13)
+
+_LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
+# CIE L* breakpoints, on relative luminance.
+_L_KNEE_Y = 0.008856
+_L_SLOPE = 903.3
 
 
 class ProofUnavailable(RuntimeError):
     """Raised when a profile carries no measured response to proof against."""
+
+
+def _to_lstar(y: np.ndarray) -> np.ndarray:
+    y = np.clip(y, 0.0, 1.0)
+    return np.where(y > _L_KNEE_Y, 116.0 * np.cbrt(y) - 16.0, _L_SLOPE * y)
+
+
+def _from_lstar(lstar: np.ndarray) -> np.ndarray:
+    lstar = np.clip(lstar, 0.0, 100.0)
+    return np.where(lstar > _L_SLOPE * _L_KNEE_Y, ((lstar + 16.0) / 116.0) ** 3, lstar / _L_SLOPE)
 
 
 def measured_response(profile: Profile) -> Lut:
@@ -75,6 +91,27 @@ def measured_response(profile: Profile) -> Lut:
     return Lut(pchip_eval(xs[keep], ys[keep], grid)).enforce_monotonic()
 
 
+def measured_endpoints(profile: Profile) -> tuple[float, float]:
+    """The paper's measured (Dmax, paper-white) lightness in L*.
+
+    :func:`measured_response` normalises these away to a 0–1 curve, which is right for the
+    curve and wrong for the proof: predicting where a tone lands needs to know where the
+    ends *are*. Measured Dmax on hand-coated paper runs around L* 36; the Prussian blue
+    constant above is nearer 27, so proofing against the constant makes every shadow look
+    deeper than the paper can actually go.
+    """
+    patches = (profile.measurements or {}).get("raw_patches") or []
+    measured_response(profile)  # reuse its validation and error messages
+    by_value: dict[int, list[float]] = {}
+    for p in patches:
+        by_value.setdefault(int(p["value"]), []).append(float(p["lstar"]))
+    values = sorted(by_value)
+    return (
+        float(np.mean(by_value[values[0]])),  # clear film → maximum exposure → Dmax
+        float(np.mean(by_value[values[-1]])),  # maximum ink → bare paper
+    )
+
+
 def soft_proof(negative: Image, profile: Profile) -> Image:
     """Render what ``negative`` should look like once printed on this paper.
 
@@ -100,11 +137,24 @@ def soft_proof(negative: Image, profile: Profile) -> Image:
     # error the explicit working_space parameter exists to prevent.
     ink = np.clip(1.0 - print_view.min(axis=-1), 0.0, 1.0)
 
-    lightness = response.apply(ink.astype(np.float32))
+    fraction = response.apply(ink.astype(np.float32))
 
+    # The response is a fraction of the paper's measured *lightness* range, so it has to be
+    # interpolated in L* and only then turned back into light. Blending linear reflectance
+    # with an L* fraction — which this did until two prints showed it up — puts a mid tone
+    # at 50% luminance where L* says 18%, and the proof came out ~14 L* too light through
+    # the midtones while matching perfectly at both ends.
+    dmax_lstar, paper_lstar = measured_endpoints(profile)
+    lstar = dmax_lstar + fraction * (paper_lstar - dmax_lstar)
+    luminance = _from_lstar(lstar)
+
+    # Hue comes from the constants, tone from the measurement: take the blue→paper ramp for
+    # its colour and rescale it to the luminance the paper actually produces.
     paper = np.asarray(PAPER_RGB, dtype=np.float32)
     blue = np.asarray(BLUE_RGB, dtype=np.float32)
-    reflect = blue[None, None, :] + lightness[..., None] * (paper - blue)[None, None, :]
+    hue = blue[None, None, :] + fraction[..., None] * (paper - blue)[None, None, :]
+    hue_luminance = np.maximum(hue @ _LUMA, 1e-6)
+    reflect = hue * (luminance / hue_luminance)[..., None]
     return Image(
         data=from_linear(np.clip(reflect, 0.0, 1.0), negative.space),
         space=negative.space,
