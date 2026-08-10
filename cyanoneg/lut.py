@@ -26,6 +26,15 @@ DEFAULT_SIZE = 256
 #: the correction is so steep at the foot.
 CUBE_SIZE = 64
 
+#: Curves in a Photoshop .acv: composite, red, green, blue, and a fifth. Photoshop rejects
+#: a file that carries fewer, whatever the format description allows. Read off the presets
+#: Photoshop ships in ``Presets/Curves``.
+ACV_CURVES = 5
+#: Most points Photoshop accepts in one curve, and what this exports — the correction is
+#: steep at the foot and needs every one of them.
+ACV_MAX_POINTS = 19
+ACV_POINTS = 19
+
 
 # --------------------------------------------------------------------------- PCHIP core
 
@@ -176,28 +185,38 @@ class Lut:
         path.write_text(header + body + "\n", encoding="ascii")
         return path
 
-    def export_acv(self, path: str | Path, points: int = 16) -> Path:
+    def export_acv(self, path: str | Path, points: int = ACV_POINTS) -> Path:
         """Write a Photoshop .acv curves file.
 
-        The format (Photoshop File Formats spec): big-endian, version word 4, curve count,
-        then per curve a point count followed by (output, input) pairs on a 0–255 scale.
-        A curve holds at most 19 points, so the table is subsampled; Photoshop interpolates
-        between them, which is why this is a QA/inspection format — the pipeline itself
-        always applies the full-resolution table.
+        Big-endian: version word 4, a curve count, then per curve a point count followed by
+        (output, input) pairs on a 0–255 scale.
 
-        One curve is written (the composite RGB curve), matching how a correction curve is
-        used in the Photoshop workflow this tool replaces.
+        **Five curves, not one.** The format description permits any count, and writing the
+        single composite curve produced a file Photoshop rejected as incompatible. Its own
+        presets — ``Presets/Curves/*.acv`` in any installation — all carry exactly five:
+        composite, red, green, blue, and a fifth, with the unused ones written as a
+        two-point identity. That is what is matched here, structure read from Adobe's own
+        files rather than inferred from the spec.
+
+        A curve holds at most 19 points, so the table is subsampled and Photoshop
+        interpolates between them: this is an inspection format. The pipeline itself always
+        applies the full-resolution table, and :meth:`export_cube` is the faithful export.
         """
-        if not 2 <= points <= 19:
-            raise ValueError("a Photoshop curve holds between 2 and 19 points")
+        if not 2 <= points <= ACV_MAX_POINTS:
+            raise ValueError(f"a Photoshop curve holds between 2 and {ACV_MAX_POINTS} points")
         path = Path(path)
         grid = np.linspace(0.0, 1.0, points)
-        outputs = self.apply(grid)
 
-        payload = struct.pack(">hh", 4, 1)  # version 4, one curve
-        payload += struct.pack(">h", points)
-        for x, y in zip(grid, outputs):
-            payload += struct.pack(">hh", int(round(float(y) * 255)), int(round(float(x) * 255)))
+        def curve(xs: np.ndarray, ys: np.ndarray) -> bytes:
+            out = struct.pack(">h", len(xs))
+            for x, y in zip(xs, ys):
+                out += struct.pack(">hh", int(round(float(y) * 255)), int(round(float(x) * 255)))
+            return out
+
+        ends = np.array([0.0, 1.0])
+        payload = struct.pack(">hh", 4, ACV_CURVES)
+        payload += curve(grid, self.apply(grid))  # composite carries the correction
+        payload += curve(ends, ends) * (ACV_CURVES - 1)  # per-channel curves stay identity
         path.write_bytes(payload)
         return path
 

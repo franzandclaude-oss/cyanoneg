@@ -7,7 +7,7 @@ import struct
 import numpy as np
 import pytest
 
-from cyanoneg.lut import CUBE_SIZE, Lut, derive_correction, pchip_eval
+from cyanoneg.lut import ACV_CURVES, ACV_POINTS, CUBE_SIZE, Lut, derive_correction, pchip_eval
 
 
 class TestLutBasics:
@@ -113,23 +113,65 @@ class TestSyntheticRoundTrip:
 
 
 class TestExport:
+    def read_acv(self, raw: bytes):
+        """Parse an .acv into (version, [[(input, output), ...], ...]), strictly."""
+        version, count = struct.unpack_from(">hh", raw, 0)
+        offset, curves = 4, []
+        for _ in range(count):
+            (n,) = struct.unpack_from(">h", raw, offset)
+            offset += 2
+            curves.append([struct.unpack_from(">hh", raw, offset + 4 * i)[::-1] for i in range(n)])
+            offset += 4 * n
+        assert offset == len(raw), "trailing bytes: the file is not what it claims"
+        return version, curves
+
     def test_acv_structure(self, tmp_path):
+        """Five curves, not one.
+
+        The format description permits any count, so this wrote the single composite curve
+        — and Photoshop rejected the file as incompatible. Its own presets all carry five.
+        """
         lut = Lut(np.linspace(0, 1, 256) ** 0.8)
-        path = lut.export_acv(tmp_path / "c.acv")
-        raw = path.read_bytes()
-        version, curve_count = struct.unpack(">hh", raw[:4])
-        (points,) = struct.unpack(">h", raw[4:6])
-        assert (version, curve_count, points) == (4, 1, 16)
-        assert len(raw) == 6 + points * 4
-        pairs = struct.unpack(f">{points * 2}h", raw[6:])
-        outputs, inputs = pairs[0::2], pairs[1::2]
-        assert all(0 <= v <= 255 for v in pairs)
-        assert list(inputs) == sorted(inputs)  # Photoshop requires ascending inputs
+        version, curves = self.read_acv(lut.export_acv(tmp_path / "c.acv").read_bytes())
+        assert version == 4
+        assert len(curves) == ACV_CURVES
+
+        composite = curves[0]
+        assert len(composite) == ACV_POINTS
+        inputs = [p[0] for p in composite]
+        assert inputs == sorted(inputs), "Photoshop requires ascending inputs"
         assert inputs[0] == 0 and inputs[-1] == 255
+        assert all(0 <= v <= 255 for point in composite for v in point)
+
+        for channel in curves[1:]:
+            assert channel == [(0, 0), (255, 255)], "unused channels must be identity"
+
+    def test_acv_matches_photoshops_own_presets(self):
+        """Compare our file's shape against one Adobe wrote, when Photoshop is installed.
+
+        This is where the five-curve requirement came from: not from the spec, which does
+        not state it, but from reading `Presets/Curves/*.acv`. Skipped when Photoshop is
+        absent, so it documents the source of the knowledge on the machines that have it.
+        """
+        import tempfile
+        from pathlib import Path as P
+
+        presets = sorted(P("C:/Program Files/Adobe").glob("*/Presets/Curves/*.acv")) if \
+            P("C:/Program Files/Adobe").is_dir() else []
+        if not presets:
+            pytest.skip("Photoshop not installed — no reference presets to compare against")
+
+        their_version, their_curves = self.read_acv(presets[0].read_bytes())
+        with tempfile.TemporaryDirectory() as d:
+            ours = Lut(np.linspace(0, 1, 256) ** 0.8).export_acv(P(d) / "ours.acv")
+            our_version, our_curves = self.read_acv(ours.read_bytes())
+        assert our_version == their_version
+        assert len(our_curves) == len(their_curves)
 
     def test_acv_point_count_limits(self, tmp_path):
-        with pytest.raises(ValueError):
-            Lut.identity().export_acv(tmp_path / "x.acv", points=20)
+        for bad in (1, 20):
+            with pytest.raises(ValueError, match="between 2 and 19"):
+                Lut.identity().export_acv(tmp_path / "x.acv", points=bad)
 
     def cube_rows(self, path):
         lines = path.read_text().splitlines()
