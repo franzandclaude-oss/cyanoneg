@@ -43,6 +43,8 @@ This is valid for the current CassArt profile because saturation is 1.0 and a bl
 
 **Suggested fix:** recover scalar coverage from the blocker model itself rather than from `min(R,G,B)`. Add regression tests at saturation 1.0 and below 1.0, including zero, intermediate, and full coverage. Verify that current CassArt proof output is unchanged or numerically equivalent.
 
+> **Resolved 11 August 2026** in `1e202c2` — see Resolution below.
+
 ### 5. Strict profile JSON validation
 
 `Profile.from_dict()` currently boolean-coerces `provisional` before validation. A malformed value such as:
@@ -53,17 +55,23 @@ is therefore converted to Python `True` instead of being rejected.
 
 **Suggested fix:** pass the raw value to validation and require a genuine JSON boolean. Add rejection tests for strings, integers and null.
 
+> **Resolved 11 August 2026** in `1e202c2` — see Resolution below.
+
 ### 6. Photoshop `.acv` compatibility
 
 The implementation currently treats **19 points** as a supported Photoshop ACV limit, while the handoff records that a 19-point file was rejected by Photoshop on 10 August 2026. Five- and three-point files loaded successfully; the true application limit remains unresolved.
 
 **Suggested fix:** do not describe 19 points as Photoshop-verified. Keep `.acv` experimental / inspection-only until the actual acceptance boundary is measured. Keep `.cube` as the recommended production format.
 
+> **Resolved 11 August 2026** in `2fbaf9a` — the boundary was measured, not assumed: 16. See Resolution below.
+
 ### 7. Windows path tests on macOS
 
 Six GUI path tests fail on non-Windows hosts when Windows-style path strings are passed through the host `pathlib.Path`. This is expected POSIX behaviour and is not evidence that the Windows runtime is broken.
 
 **Suggested fix:** use `PureWindowsPath` for tests of pure Windows path manipulation. Mark tests that genuinely require Windows filesystem/API behaviour as Windows-only. Do not complicate production code merely to make Windows runtime semantics execute natively on macOS.
+
+> **Resolved 11 August 2026** in `1e202c2`, by the second of the two suggested routes only. See Resolution below.
 
 ## Development and release platform policy
 
@@ -132,3 +140,83 @@ The next commit is complete when:
 **macOS development:** suitable and intentional
 
 Proceed with development. The next change should harden software and tests while leaving the validated physical calibration path alone.
+
+---
+
+# Resolution / Re-review — 11 August 2026
+
+Added after the fact. **The findings above are left exactly as written**, including the parts
+time has overtaken: what a review got right and what it merely inferred is worth being able
+to look up later, and a document quietly edited to agree with the outcome cannot be audited.
+This section records what was done, not what should have been said.
+
+All seven findings are closed, across two commits:
+
+| # | Finding | Commit | Outcome |
+|---|---|---|---|
+| 1–3 | Pipeline, colour/resize, CassArt calibration | — | Pass on review; nothing changed, as recommended |
+| 4 | Soft-proof coverage recovery | `1e202c2` | Fixed |
+| 5 | Strict `provisional` validation | `1e202c2` | Fixed |
+| 6 | `.acv` point compatibility | `2fbaf9a` | **Measured** — the limit is 16 |
+| 7 | Windows path tests on macOS | `1e202c2` | Marked Windows-only |
+
+## What was done
+
+**4 — coverage recovery.** `blocker.recover_coverage()` now inverts the profile's own blocker
+table rather than using `1 - min(R, G, B)`, for `fixed_hue` and `zone_hue` alike, and
+`soft_proof` calls it. The review's diagnosis was correct and its reasoning was reproduced
+before the fix was written: at saturation 0.4 the old shortcut understates a true coverage of
+0.6 by more than 0.1, and a regression test pins exactly that case alongside a
+saturation × coverage grid. CassArt output is unchanged, as required — at saturation 1.0 with
+a channel reaching zero, the two methods agree analytically and were confirmed to agree
+numerically.
+
+**5 — strict validation.** `from_dict` passes `provisional` through untouched so `validate()`
+can reject anything that is not a real JSON boolean. One line of production code; the rest is
+tests, including the round trip that `"provisional": "false"` must not survive.
+
+**6 — `.acv` compatibility.** This one was not resolved by reasoning, because reasoning is
+what produced the wrong answer twice. The spec says 19; Photoshop refused 19. The Curves
+dialog caps at 16, but that was also the argument for 19. So files were generated at every
+count and loaded one at a time into Photoshop 2026: **16 opens with all points present, 17
+and 18 are refused.** `ACV_POINTS` and `ACV_MAX_POINTS` are now both 16, pinned by a test, and
+the shipped CassArt `.acv` was regenerated — which incidentally took its worst error from 44
+code values to 8, since it had been held at a conservative 5 points while the limit was
+unknown. `.acv` remains an inspection format and `.cube` remains the production path, now
+permanently rather than provisionally: 16 points cannot follow a correction that is nearly
+vertical at the foot, and no larger count exists.
+
+**7 — Windows path tests.** The review offered two routes; only the second was taken. Rewriting
+the assertions against `PureWindowsPath` was rejected deliberately, because such a test can
+pass on macOS while saying nothing about the ambient `Path` the code actually meets on its one
+real runtime — it would convert a visible gap into an invisible one. The seven affected tests
+are `skipif`-marked instead, with the reasoning recorded at the marker, so they skip here and
+genuinely execute on Windows.
+
+## Test result
+
+**272 passed, 10 skipped, 0 failed.**
+
+Environment matters for this figure and is stated rather than assumed: macOS 26, Python 3.13,
+full GUI suite executing against a real hidden Tk root. The 10 skips are the 7 Windows-only
+path tests from finding 7 plus 3 that need `EDN_RGB_256.tif`, which is untracked by design.
+282 tests collected.
+
+Two of those tests are new since the review: the `.acv` point-count pin, and the comparison
+against Photoshop's own shipped presets — which previously looked only in `C:/Program Files`
+and therefore never ran during development. It now searches `/Applications` too, so the check
+that established the five-curve structure runs on the machine the code is written on rather
+than only on the one it ships to.
+
+**A caution on quoting this number.** The suite reports a very different split depending on
+where it runs, and only the total is stable. A host with no display skips all 37 Tk-dependent
+tests and, without Photoshop, the preset comparison as well — the same 282 tests then report
+roughly 235 passed / 47 skipped / 0 failed. That is not a worse result, but it is a much
+weaker one: zero failures across 235 tests that exclude the entire GUI says nothing about the
+GUI. Any re-review figure should carry the environment that produced it.
+
+## Acceptance criteria
+
+Criteria 1–10 are met. Criterion 11 — the final executable built and tested on Windows from an
+identifiable revision — is by its nature outstanding on macOS; the identifiable revision for it
+is `2fbaf9a`.
