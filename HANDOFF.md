@@ -80,42 +80,30 @@ coating varies between sessions and that is worth knowing before blaming anythin
 **Scan it the same way as the calibration sheets** — SilverFast raw, converted in Photoshop.
 A different scan path is the one thing that would make the comparison meaningless.
 
-### 2. Find the .acv point limit — one test, five minutes
+### 2. The .acv point limit — settled, it is 16
 
 **The `.cube` is done and works.** Adjustments → Color Lookup → Load 3D LUT →
 `profiles/CassArt 300 Sm.cube`. A 64×64×64 grid, within 0.6 of a code value of the real
 curve. This is the one to use for anything real.
 
-**The `.acv` loads, but only at low point counts, and the exact limit is still unknown.**
-Tested 10 August: 19 points is rejected, 5 and 3 load fine. Version and curve count were
-never the problem — the file is version 4 with five curves, matching the presets Photoshop
-ships in `Presets/Curves`, and that part is settled.
+**The `.acv` limit is 16 points.** Measured 11 August 2026 against Photoshop 2026, one file
+per count: 16 opens with every point present, 17 and 18 are refused, and 19 was already
+known to be refused on 10 August. 16 is also the cap in Photoshop's own Curves dialog, so
+the file format and the UI agree — the spec's 19 is the outlier, and was never worth
+trusting over a loaded file.
 
-Four files are waiting in `acv-test/`. Load each through Curves → ⚙ → Load Preset, **largest
-first**, and note the biggest that opens:
+Version and curve count were never the problem: the file is version 4 with five curves,
+matching all nine presets Photoshop ships in `Presets/Curves`.
 
-| file | worst error if used |
-|---|---|
-| `17-points.acv` | 7.2 code values |
-| `16-points.acv` | 8.1 |
-| `14-points.acv` | 10.4 |
-| `12-points.acv` | 13.6 |
+`ACV_POINTS` and `ACV_MAX_POINTS` in `cyanoneg/lut.py` are both 16 now, and
+`profiles/CassArt 300 Sm.acv` has been regenerated at that count. Nothing is outstanding
+here. `acv-test/` is gone; if a copy survives on the Windows machine it can go too — that
+one also holds ~120 MB of test TIFFs, untracked.
 
-16 is the expected answer, since that is the cap in Photoshop's own Curves dialog — but
-that was also the reasoning behind 19, and 19 was wrong.
-
-Once you know: set `ACV_POINTS` in `cyanoneg/lut.py` to that number, drop `ACV_MAX_POINTS`
-to match, and regenerate:
-
-```bash
-python -c "from cyanoneg.profiles import PROFILE_DIR, Profile; p=PROFILE_DIR/'CassArt 300 Sm'; Profile.load(p.with_suffix('.json')).lut.export_acv(p.with_suffix('.acv'))"
-```
-
-Then delete `acv-test/`. It also holds ~120 MB of test TIFFs, untracked.
-
-**Either way, the `.acv` stays an inspection format.** Even at 19 points it misses the deep
-shadows by 5–6 code values, because the correction is nearly vertical at the foot. Use it to
-look at the curve's shape; use the `.cube` to actually process anything.
+**The `.acv` stays an inspection format regardless.** At 16 points it misses the deep
+shadows by about 8 code values, because the correction is nearly vertical at the foot, and
+there is no larger count available to close that gap. Use it to look at the curve's shape;
+use the `.cube` to actually process anything.
 
 ---
 

@@ -30,15 +30,16 @@ CUBE_SIZE = 64
 #: a file that carries fewer, whatever the format description allows. Read off the presets
 #: Photoshop ships in ``Presets/Curves``.
 ACV_CURVES = 5
-#: Points per curve. The format description allows 19 and Photoshop rejects a 19-point file
-#: outright — tested 10 August 2026, when 5 and 3 both loaded and 19 did not. The real limit
-#: is not yet known; `acv-test/` holds files at 12, 14, 16 and 17 to find it, and HANDOFF.md
-#: says what to do with the answer. Until then this stays at a count known to work.
+#: Points per curve. **16, measured — not read off the spec.** The format description allows
+#: 19, and a 19-point file is rejected outright. Loading files at each count into Photoshop
+#: 2026 (11 August 2026) put the boundary here: 16 loads with every point present, 17 and 18
+#: are refused. 16 is also the cap in Photoshop's own Curves dialog, so the file format and
+#: the UI agree; the spec is the odd one out.
 #:
 #: Do not raise it on the strength of the spec. That is what produced a file Photoshop would
 #: not open, and it took four attempts and a screenshot to find out why.
-ACV_MAX_POINTS = 19
-ACV_POINTS = 5
+ACV_MAX_POINTS = 16
+ACV_POINTS = 16
 
 
 # --------------------------------------------------------------------------- PCHIP core
@@ -203,9 +204,13 @@ class Lut:
         two-point identity. That is what is matched here, structure read from Adobe's own
         files rather than inferred from the spec.
 
-        A curve holds at most 19 points, so the table is subsampled and Photoshop
-        interpolates between them: this is an inspection format. The pipeline itself always
-        applies the full-resolution table, and :meth:`export_cube` is the faithful export.
+        A curve holds at most 16 points (see :data:`ACV_MAX_POINTS`), so the table is
+        subsampled and Photoshop interpolates between them. At 16 the worst error against
+        this project's curves is around 8 code values, in the deep shadows where the
+        correction is nearly vertical — visible, and not something more points would fix,
+        since 16 is the ceiling. **This is an inspection format**: use it to look at the
+        curve's shape. The pipeline always applies the full-resolution table, and
+        :meth:`export_cube` is the faithful export for anything real.
         """
         if not 2 <= points <= ACV_MAX_POINTS:
             raise ValueError(f"a Photoshop curve holds between 2 and {ACV_MAX_POINTS} points")

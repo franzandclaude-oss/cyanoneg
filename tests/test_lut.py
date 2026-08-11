@@ -7,7 +7,15 @@ import struct
 import numpy as np
 import pytest
 
-from cyanoneg.lut import ACV_CURVES, ACV_POINTS, CUBE_SIZE, Lut, derive_correction, pchip_eval
+from cyanoneg.lut import (
+    ACV_CURVES,
+    ACV_MAX_POINTS,
+    ACV_POINTS,
+    CUBE_SIZE,
+    Lut,
+    derive_correction,
+    pchip_eval,
+)
 
 
 class TestLutBasics:
@@ -152,12 +160,22 @@ class TestExport:
         This is where the five-curve requirement came from: not from the spec, which does
         not state it, but from reading `Presets/Curves/*.acv`. Skipped when Photoshop is
         absent, so it documents the source of the knowledge on the machines that have it.
+
+        Both install locations are searched. The Windows one is where the requirement was
+        originally found; the macOS one is where it was confirmed, along with the 16-point
+        ceiling, and a check that only runs on the deployment machine is a check that does
+        not run while the code is being written.
         """
         import tempfile
         from pathlib import Path as P
 
-        presets = sorted(P("C:/Program Files/Adobe").glob("*/Presets/Curves/*.acv")) if \
-            P("C:/Program Files/Adobe").is_dir() else []
+        roots = [P("C:/Program Files/Adobe"), P("/Applications")]
+        presets = sorted(
+            preset
+            for root in roots
+            if root.is_dir()
+            for preset in root.glob("*/Presets/Curves/*.acv")
+        )
         if not presets:
             pytest.skip("Photoshop not installed — no reference presets to compare against")
 
@@ -169,9 +187,24 @@ class TestExport:
         assert len(our_curves) == len(their_curves)
 
     def test_acv_point_count_limits(self, tmp_path):
-        for bad in (1, 20):
-            with pytest.raises(ValueError, match="between 2 and 19"):
+        for bad in (1, 17):
+            with pytest.raises(ValueError, match="between 2 and 16"):
                 Lut.identity().export_acv(tmp_path / "x.acv", points=bad)
+
+    def test_the_point_ceiling_is_the_measured_one(self):
+        """16, because that is what Photoshop accepted — not because the spec says so.
+
+        The spec allows 19, and a 19-point file is rejected outright. Loading one file per
+        count into Photoshop 2026 (11 August 2026) found the boundary: 16 loads with every
+        point present, 17 and 18 are refused. Photoshop's own Curves dialog stops at 16
+        too, so the format and the UI agree and the spec is the outlier.
+
+        Pinned here because the failure is silent in the worst way — nothing in this
+        codebase can tell that an exported file will not open, and raising the count on the
+        strength of the documentation is exactly the mistake that produced one.
+        """
+        assert ACV_MAX_POINTS == 16
+        assert ACV_POINTS == ACV_MAX_POINTS, "no reason to export below the measured ceiling"
 
     def cube_rows(self, path):
         lines = path.read_text().splitlines()
