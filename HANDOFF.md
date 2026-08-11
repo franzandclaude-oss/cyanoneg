@@ -80,16 +80,42 @@ coating varies between sessions and that is worth knowing before blaming anythin
 **Scan it the same way as the calibration sheets** — SilverFast raw, converted in Photoshop.
 A different scan path is the one thing that would make the comparison meaningless.
 
-### 2. Check the Photoshop exports
+### 2. Find the .acv point limit — one test, five minutes
 
-The one claim the tests cannot cover. Both files sit next to the profile:
+**The `.cube` is done and works.** Adjustments → Color Lookup → Load 3D LUT →
+`profiles/CassArt 300 Sm.cube`. A 64×64×64 grid, within 0.6 of a code value of the real
+curve. This is the one to use for anything real.
 
-- `profiles/CassArt 300 Sm.cube` → Adjustments → Color Lookup → Load 3D LUT
-- `profiles/CassArt 300 Sm.acv` → Adjustments → Curves → ⚙ → Load Preset
+**The `.acv` loads, but only at low point counts, and the exact limit is still unknown.**
+Tested 10 August: 19 points is rejected, 5 and 3 load fine. Version and curve count were
+never the problem — the file is version 4 with five curves, matching the presets Photoshop
+ships in `Presets/Curves`, and that part is settled.
 
-The `.cube` is the faithful one — a 64x64x64 grid, within 0.6 of a code value of the curve. The `.acv` holds 19 points, the
-most Photoshop allows, and your curve is steep enough at the bottom that it misses the deep
-shadows by up to 5 L\*. **Use the `.acv` to look at the curve's shape, not to print through.**
+Four files are waiting in `acv-test/`. Load each through Curves → ⚙ → Load Preset, **largest
+first**, and note the biggest that opens:
+
+| file | worst error if used |
+|---|---|
+| `17-points.acv` | 7.2 code values |
+| `16-points.acv` | 8.1 |
+| `14-points.acv` | 10.4 |
+| `12-points.acv` | 13.6 |
+
+16 is the expected answer, since that is the cap in Photoshop's own Curves dialog — but
+that was also the reasoning behind 19, and 19 was wrong.
+
+Once you know: set `ACV_POINTS` in `cyanoneg/lut.py` to that number, drop `ACV_MAX_POINTS`
+to match, and regenerate:
+
+```bash
+python -c "from cyanoneg.profiles import PROFILE_DIR, Profile; p=PROFILE_DIR/'CassArt 300 Sm'; Profile.load(p.with_suffix('.json')).lut.export_acv(p.with_suffix('.acv'))"
+```
+
+Then delete `acv-test/`. It also holds ~120 MB of test TIFFs, untracked.
+
+**Either way, the `.acv` stays an inspection format.** Even at 19 points it misses the deep
+shadows by 5–6 code values, because the correction is nearly vertical at the foot. Use it to
+look at the curve's shape; use the `.cube` to actually process anything.
 
 ---
 

@@ -30,10 +30,15 @@ CUBE_SIZE = 64
 #: a file that carries fewer, whatever the format description allows. Read off the presets
 #: Photoshop ships in ``Presets/Curves``.
 ACV_CURVES = 5
-#: Most points Photoshop accepts in one curve, and what this exports — the correction is
-#: steep at the foot and needs every one of them.
+#: Points per curve. The format description allows 19 and Photoshop rejects a 19-point file
+#: outright — tested 10 August 2026, when 5 and 3 both loaded and 19 did not. The real limit
+#: is not yet known; `acv-test/` holds files at 12, 14, 16 and 17 to find it, and HANDOFF.md
+#: says what to do with the answer. Until then this stays at a count known to work.
+#:
+#: Do not raise it on the strength of the spec. That is what produced a file Photoshop would
+#: not open, and it took four attempts and a screenshot to find out why.
 ACV_MAX_POINTS = 19
-ACV_POINTS = 19
+ACV_POINTS = 5
 
 
 # --------------------------------------------------------------------------- PCHIP core
