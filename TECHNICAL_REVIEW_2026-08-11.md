@@ -208,12 +208,13 @@ and therefore never ran during development. It now searches `/Applications` too,
 that established the five-curve structure runs on the machine the code is written on rather
 than only on the one it ships to.
 
-**A caution on quoting this number.** The suite reports a very different split depending on
-where it runs, and only the total is stable. A host with no display skips all 37 Tk-dependent
-tests and, without Photoshop, the preset comparison as well — the same 282 tests then report
-roughly 235 passed / 47 skipped / 0 failed. That is not a worse result, but it is a much
-weaker one: zero failures across 235 tests that exclude the entire GUI says nothing about the
-GUI. Any re-review figure should carry the environment that produced it.
+**A caution on quoting this number.** The split moves a long way with the host while the total
+barely moves, so a bare pass count from this suite says less than it appears to. A machine
+with no display skips all 37 Tk-dependent tests, and one without Photoshop skips the preset
+comparison too; the same 282 tests can then report well over 40 skips and still show zero
+failures. That is not a worse result, but it is a much weaker one — zero failures across a run
+that excludes the entire GUI says nothing about the GUI. Any figure quoted from this suite,
+including the one above, should carry the environment that produced it.
 
 ## Acceptance criteria
 
