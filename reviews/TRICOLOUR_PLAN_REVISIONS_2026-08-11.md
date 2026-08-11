@@ -1,20 +1,25 @@
-# Tricolour Plan — Revisions B1 and A1–A8
+# Tricolour Plan — Revisions B1, P4 and A1–A8
 
 **Written:** 11 August 2026
 **Against:** `TRICOLOUR_CONVERTER_PLAN_2026-08-11.md`
 **Companion to:** `reviews/TRICOLOUR_PLAN_SECOND_REVIEW_2026-08-11.md` (item numbering follows its §7)
 
-**Scope.** This document specifies the items that need no decision from the operator: **B1** (exposure source-of-truth) and **A1–A8** (implementation acceptance criteria). It is written as a specification to code against, not as commentary.
+**Scope.** This document specifies **B1** (exposure source-of-truth), **P4** (readable-wedge criterion) and **A1–A8** (implementation acceptance criteria). It is written as a specification to code against, not as commentary.
 
-**Deliberately not covered — pending answers:**
+**Operator decisions received:**
+
+| Item | Answer |
+|---|---|
+| P3 — wedge geometry | **16 levels × redundancy 4**, all three layers. Nominal knot count is therefore 11 across the board (A8). |
+| P4 — readable-wedge criterion | Delegated; specified in §P4 below from the measured CassArt data. |
+
+**Still pending:**
 
 | Pending | Blocks |
 |---|---|
 | B2 — Stage 2 scan protocol | A7's scan-step wording only |
 | P1 — blocked control region | — |
 | P2 — per-layer `scale` field | — |
-| P3 — yellow wedge 16×k4 vs 32×k2 | A8's worked example only |
-| P4 — readable-wedge criterion | — |
 
 Neither dependency is structural; both are a sentence each once the answers land.
 
@@ -396,6 +401,18 @@ Chosen because it is continuous with both known-good anchor points rather than i
 
 A rule that passes through both existing reference points is defensible in a way a fresh constant is not — the same standard R1 applies to curves.
 
+### Refinement: cap knots by *resolvable* levels, not nominal levels
+
+`correction_knots` keys off the **nominal** level count, which is what preserves the mono path. But a tricolour layer can be nominally 16 levels while carrying only 9 or 10 informative steps (see §P4). Fitting 11 knots to 10 informative levels reintroduces exactly the over-parameterisation Q2 identified.
+
+**For the tricolour path only:**
+
+```python
+knots = min(correction_knots(levels), resolvable_levels)
+```
+
+On a layer scoring like the CassArt reference at 16 × k4 this gives `min(11, 10) = 10`. The mono path never applies the cap and is unaffected.
+
 ### Tests
 
 ```python
@@ -407,9 +424,125 @@ def test_correction_knots_for_sixteen_levels():
 
 def test_mono_path_still_uses_the_default():
     """derive_correction's signature default is still 21 — the mono workflow is untouched."""
+
+def test_tricolour_knots_capped_by_resolvable_levels():
+    assert tricolour_knots(levels=16, resolvable_levels=10) == 10
+    assert tricolour_knots(levels=16, resolvable_levels=14) == 11   # cap does not raise it
 ```
 
-**Depends on P3 only for which row of the table print #1 exercises.** If the yellow slot goes to 32 × k2, its knot count is 21 and only magenta and cyan use 11. The rule is unchanged either way.
+**P3 is settled at 16 × k4 for all three layers**, so the nominal count is 11 everywhere and the cap in §P4 is what varies per layer.
+
+---
+
+## P4 — When a wedge is readable enough to promote
+
+### Provenance, and a correction
+
+The threshold proposed in the second review's §7 — "within-level spread below 3 L\*" — **was a guess and is wrong.** Read as between-copy standard deviation, the measured `profiles/CassArt 300 Sm.json` exceeds it at four levels (19, 20, 21, 24; SD to 3.87). That profile is `provisional: false` and verified on paper. The criterion would have refused to promote a known-good calibration.
+
+What follows is derived instead from that profile's 512 patches (32 levels × 16 copies), which is the only measured response this project has.
+
+### Measured baseline
+
+| Quantity | Value |
+|---|---|
+| Pooled within-level SD | **1.95 L\*** (not constant: ~1.0 at the ends, to 3.87 through the upper midtones) |
+| SE of a level mean, k=16 | 0.49 L\* |
+| SE of a level mean, **k=4** | **0.98 L\*** |
+
+### Definitions
+
+**Resolvable step.** Adjacent levels *i*, *i*+1 whose mean response differs by more than twice the combined standard error:
+
+```python
+se[i]       = sd[i] / sqrt(k)
+combined[i] = sqrt(se[i]**2 + se[i+1]**2)
+resolvable[i] = (mean[i+1] - mean[i]) > 2 * combined[i]
+```
+
+`sd[i]` is the between-copy SD **of the layer's own response quantity** (`lstar_g` / `lstar_b` / `lstar_r`), not of L\*.
+
+**Coverage.** With `w` the indices of resolvable steps:
+
+```python
+coverage = 0.0 if not len(w) else (value[w[-1] + 1] - value[w[0]]) / (value.max() - value.min())
+```
+
+i.e. the fraction of the *input* range spanned by the region where the response actually moves.
+
+### The gate
+
+> **A layer may be written `provisional: false` only if coverage ≥ 50%.** Below that, refuse, and say which input range carries no information.
+
+This is the only automatic gate. It measures the failure we are actually afraid of — a curve extrapolated across a domain with no data — rather than a proxy for it.
+
+**Advisory band: 50–60% passes but is flagged**, with the dead-zone range printed, for a look before promoting.
+
+### Why coverage, and not a level count
+
+The obvious statistic — number of resolvable steps — **is not monotone in compression severity** and therefore cannot carry a threshold. Simulating the reference as a 16-level k=4 wedge with the toe progressively flattened to Dmax:
+
+| | good | mild (6 dead) | moderate (9 dead) | severe (12 dead) |
+|---|---|---|---|---|
+| resolvable steps (of 15) | 9 | **10** | 7 | 4 |
+| **coverage** | **58%** | **65%** | **45%** | **26%** |
+
+"Mild" scores *more* resolvable steps than "good", because flattening the toe removes borderline steps and can create one at the boundary. Coverage orders the cases correctly and, unlike the count, is stable against redundancy:
+
+| coverage % | k=4 | k=8 | k=16 |
+|---|---|---|---|
+| good | 58 | 77 | 90 |
+| moderate | 45 | 45 | 45 |
+| severe | 26 | 26 | 26 |
+
+A 50% gate separates pass from fail at every redundancy.
+
+### Reported, never enforced
+
+`analyze_wedge` emits these for the operator; **no threshold is applied to any of them:**
+
+- per-level and pooled between-copy SD, in the response quantity
+- SE of a level mean at the actual `k`
+- resolvable-step count
+- coverage, and the **input range of the dead zone**
+
+There is no defensible automatic threshold on these numbers, and inventing one is how the §7 guess went wrong.
+
+### Recorded in the profile
+
+```json
+"response_coverage": {
+  "fraction": 0.58,
+  "input_lo": 12,
+  "input_hi": 30,
+  "resolvable_steps": 9,
+  "redundancy": 4,
+  "pooled_sd": 1.95
+}
+```
+
+The curve's domain of validity then travels with the profile, so a later reader can see where it was extrapolating. Same principle as R1: a curve must not look authoritative outside where it was measured.
+
+### Caveats, stated because they bound the numbers
+
+**The margin at k=4 is tight.** The pass/fail band is 45–58%, with the gate at 50% — roughly six points either side. P3's k=4 stands: the gate separates cleanly and k=4 is the *most conservative* test of it. But **58% is what a flawless layer scores at k=4**, where k=16 reads 90%; it must not be misread as marginal. This is the reason for the 50–60% advisory band.
+
+**Everything here is Prussian blue L\* on one paper.** Magenta and yellow read in their own channels will likely be noisier, which would lower coverage without the layer being worse. These are the best-supported starting numbers available, not measured truth for those layers — the same status R1 assigns the cloned LUT. **Print #1's actual figures should revise them**, and the gate should be treated as provisional until they do.
+
+### Tests
+
+```python
+def test_reference_profile_would_promote():
+    """The measured CassArt profile, resampled to 16 levels at k=4, passes the gate.
+    Guards against a future threshold that rejects a known-good calibration."""
+
+def test_compressed_wedge_refuses_promotion():   # 9 of 16 levels at Dmax -> 45%, refuses
+def test_coverage_stable_across_redundancy():    # same compressed wedge -> 45% at k=4, 8, 16
+def test_resolvable_count_is_not_the_gate():     # 'mild' case: count 10 > good's 9, still gated on coverage
+def test_dead_zone_range_is_reported():          # refusal names the uncovered input range
+```
+
+The first is the most important test in this document: it is the regression that stops the §7 mistake being made again.
 
 ---
 
@@ -420,9 +553,13 @@ def test_mono_path_still_uses_the_default():
 | `cyanoneg/profiles.py` | declare `scan_settings`; add to `to_dict`/`from_dict` | F5 |
 | `cyanoneg/profiles.py` | `LAYER_MAY_DIFFER`, `shared_calibration_identity`, `calibration_fingerprint` | A5 |
 | `cyanoneg/analyze.py` | fiducial span guard in `detect_fiducials` | A1 |
-| `cyanoneg/lut.py` | `correction_knots`; **default `knots=21` untouched** | A8 |
+| `cyanoneg/analyze.py` | resolvable-step and coverage computation; diagnostics reported, not thresholded; `response_coverage` written to `measurements` | P4 |
+| profile promotion path | refuse `provisional: false` below 50% coverage; flag the 50–60% band | P4 |
+| `cyanoneg/lut.py` | `correction_knots`; `tricolour_knots` cap; **default `knots=21` untouched** | A8, P4 |
 | `cyanoneg/tricolour.py` | `layer_exposure`; constants; `validate()` rules; `step_saturate` returning two fractions | B1, A3, A4 |
 | `cyanoneg/tricolour.py` | manifest emission; `<stem>_tricolour.md` wall sheet | A6, A7 |
 | plan document | §6 Stage 0 and §11 Verification 2 corrections; R6 rationale | B1, A2 |
 
-**Ordering note.** F5 must land before `seed_provisional_set` is written, and A5 depends on F5. Everything else here is independent.
+**Ordering note.** F5 must land before `seed_provisional_set` is written, and A5 depends on F5. P4's cap feeds A8, so the coverage computation lands before the tricolour curve derivation. Everything else here is independent.
+
+**Provisional status of P4's numbers.** The 50% gate and the 50–60% advisory band are derived from one colorant on one paper. They are the best-supported values available today and should be revised from print #1's measured figures — treat them the same way R1 treats the cloned LUT.
