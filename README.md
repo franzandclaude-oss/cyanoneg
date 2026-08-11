@@ -81,6 +81,19 @@ guess.
 Both are silent failures: get them wrong and you still get a negative, just not the right
 one.
 
+## Development and release platforms
+
+Cyanoneg is developed primarily on **macOS**, but **Windows is the only supported runtime**.
+Portable processing, calibration and unit tests can be run on the Mac; Windows-specific path,
+filesystem, GUI and packaging behaviour is verified on Windows.
+
+The final Windows executable is built **on Windows**, not cross-built from macOS:
+
+`Develop on Mac -> portable tests -> commit/push -> Windows tests -> Windows build -> smoke test -> release`
+
+See [`TECHNICAL_REVIEW_2026-08-11.md`](TECHNICAL_REVIEW_2026-08-11.md) for the current technical
+review, findings and next-commit recommendations.
+
 ## Tests
 
 ```bash

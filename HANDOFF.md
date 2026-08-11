@@ -165,3 +165,30 @@ In the order worth checking:
    what job 1 measures.
 5. **The scan** — if only the *measurements* look wrong and the print looks fine, suspect
    the scan path before the process.
+
+---
+
+## Development and release platform policy — added 11 August 2026
+
+**Develop on macOS; run Cyanoneg and produce the final executable on Windows.** Windows is
+the only supported production runtime. macOS is the primary development environment for
+source changes, Git work, portable tests, calibration maths, LUT/profile work, image-processing
+tests and documentation.
+
+Do not add production compatibility code merely to make Windows-only runtime behaviour work
+natively on macOS. Tests of pure Windows path manipulation can use `PureWindowsPath`; tests
+that genuinely depend on Windows filesystem behaviour, APIs or GUI integration should be
+explicitly Windows-only.
+
+The release workflow is:
+
+**Develop on Mac -> portable tests on Mac -> commit/push -> Windows -> full Windows tests ->
+build/package on Windows -> smoke test -> release.**
+
+The Windows executable is **not** to be cross-built on macOS. A clean Mac test run validates
+the portable processing/calibration logic, not the release artifact. Every releasable build
+should come from an identifiable Git revision and be verified on Windows, including GUI launch,
+profile loading, representative single and batch processing, Windows path handling and packaged
+execution outside the development environment.
+
+See `TECHNICAL_REVIEW_2026-08-11.md` for the full review and proposed next commit.
