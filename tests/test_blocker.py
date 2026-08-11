@@ -16,6 +16,7 @@ from cyanoneg.blocker import (
     export_blocker_cube,
     fixed_hue_as_zones,
     hue_to_rgb,
+    recover_coverage,
     zone_curves,
 )
 from cyanoneg.imageio import Image
@@ -91,6 +92,68 @@ class TestFixedHue:
         assert hue_to_rgb(0) == (255, 0, 0)
         assert hue_to_rgb(120) == (0, 255, 0)
         assert hue_to_rgb(360) == hue_to_rgb(0)
+
+
+class TestRecoverCoverage:
+    """Recovering ink coverage from blocked RGB must invert the model exactly at any
+    saturation — not just the saturation-1.0 case where `1 - min(R, G, B)` happens to work.
+
+    This is the fix for the soft-proof generalisation gap: the CassArt profile (saturation
+    1.0, a channel that reaches zero) never exposed it, but any future profile measured at
+    a lower saturation would have had its proof silently understate coverage.
+    """
+
+    @pytest.mark.parametrize("saturation", [1.0, 0.75, 0.5, 0.25])
+    @pytest.mark.parametrize("coverage", [0.0, 0.3, 0.5, 0.7, 1.0])
+    def test_round_trips_fixed_hue_at_any_saturation(self, saturation, coverage):
+        v = np.full((2, 2), 1.0 - coverage, dtype=np.float32)  # apply_blocker's v = 1 - ink
+        blocked = apply_blocker(v, RED, saturation)
+        recovered = recover_coverage(
+            blocked, {"model": "fixed_hue", "rgb": list(RED), "saturation": saturation}
+        )
+        assert recovered[0, 0] == pytest.approx(coverage, abs=1e-3)
+
+    def test_naive_min_channel_shortcut_underestimates_below_full_saturation(self):
+        """The exact bug the review flagged: `1 - min(R,G,B)` degrades quietly as
+        saturation drops, while recover_coverage stays exact."""
+        coverage, saturation = 0.6, 0.4
+        v = np.full((1, 1), 1.0 - coverage, dtype=np.float32)
+        blocked = apply_blocker(v, RED, saturation)
+        naive = ink_of(blocked[0])
+        exact = recover_coverage(
+            blocked, {"model": "fixed_hue", "rgb": list(RED), "saturation": saturation}
+        )[0, 0]
+        assert naive < coverage - 0.1, "the naive shortcut should visibly understate coverage here"
+        assert exact == pytest.approx(coverage, abs=1e-3)
+
+    def test_round_trips_zone_hue(self):
+        zones = [
+            {"n": 0.0, "rgb": [255, 255, 255]},
+            {"n": 0.4, "rgb": [255, 220, 120]},
+            {"n": 1.0, "rgb": [200, 20, 0]},
+        ]
+        for coverage in (0.0, 0.25, 0.6, 1.0):
+            v = np.full((2, 2), 1.0 - coverage, dtype=np.float32)
+            blocked = apply_zone_blocker(v, zones)
+            recovered = recover_coverage(blocked, {"model": "zone_hue", "zones": zones})
+            assert recovered[0, 0] == pytest.approx(coverage, abs=1e-2)
+
+    def test_unsaturated_blocker_recovers_zero_everywhere(self):
+        """Saturation 0 lays no ink in any channel; there is nothing to recover, not a
+        divide-by-a-near-zero-range guess."""
+        v = np.full((2, 2), 0.3, dtype=np.float32)
+        blocked = apply_blocker(v, RED, 0.0)
+        recovered = recover_coverage(
+            blocked, {"model": "fixed_hue", "rgb": list(RED), "saturation": 0.0}
+        )
+        assert np.all(recovered == 0.0)
+
+    def test_missing_blocker_measurement_raises(self):
+        with pytest.raises(ValueError, match="measured"):
+            recover_coverage(
+                np.zeros((1, 1, 3), dtype=np.float32),
+                {"model": "fixed_hue", "rgb": None, "saturation": None},
+            )
 
 
 class TestZoneModel:

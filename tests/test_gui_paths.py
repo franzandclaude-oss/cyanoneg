@@ -11,11 +11,27 @@ missing: keep the folder too eagerly and every image lands in the first one's
 directory; keep it not at all and a deliberately chosen destination is ignored.
 """
 
+import sys
 from pathlib import Path
 
 import pytest
 
 from cyanoneg.gui.app import App, output_for_source, reveal_command
+
+#: `output_for_source` splits and rebuilds paths with the ambient `pathlib.Path`, which is
+#: the right choice in production — Windows is the only supported runtime, and `Path` there
+#: *is* `WindowsPath`. On a POSIX host the same class has no idea `\` is a separator or that
+#: `C:` is a drive, so a Windows-style source string like `C:\pics\barn.tif` comes back as
+#: one opaque filename instead of a folder plus a name. That is a test-portability gap, not
+#: a production defect: nothing here runs, or needs to run, against real Windows path
+#: splitting anywhere but Windows itself. Per the technical review (2026-08-11, finding 7),
+#: these are marked Windows-only rather than rewritten against `PureWindowsPath` — a
+#: `PureWindowsPath` assertion could pass here while telling us nothing about whether the
+#: function that actually ships still behaves the same way on its one real runtime.
+windows_only = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="depends on the host Path class parsing Windows-style paths; only meaningful on Windows",
+)
 
 
 class TestRevealCommand:
@@ -51,13 +67,16 @@ class TestRevealCommand:
 
 
 class TestOutputPath:
+    @windows_only
     def test_name_comes_from_the_source(self):
         assert Path(output_for_source(r"C:\pics\barn.tif")).name == "barn_negative.tif"
 
+    @windows_only
     def test_sits_beside_its_own_source(self):
         got = Path(output_for_source(r"C:\pics\barn.tif"))
         assert got.parent == Path(r"C:\pics")
 
+    @windows_only
     def test_a_new_source_never_reuses_the_old_negatives_name(self):
         """Two images in a row must not land on one file.
 
@@ -70,6 +89,7 @@ class TestOutputPath:
         assert first != second
         assert Path(second).name == "gate_negative.tif"
 
+    @windows_only
     def test_images_from_different_folders_stay_in_their_own_folders(self):
         """The regression from the first attempt at the fix.
 
@@ -80,12 +100,14 @@ class TestOutputPath:
         """
         assert Path(output_for_source(r"D:\shoot2\gate.tif")).parent == Path(r"D:\shoot2")
 
+    @windows_only
     def test_a_chosen_folder_is_kept(self):
         """Steven picked that destination on purpose; only the filename should move."""
         got = Path(output_for_source(r"C:\pics\gate.tif", chosen=r"D:\negatives\barn_negative.tif"))
         assert got.parent == Path(r"D:\negatives")
         assert got.name == "gate_negative.tif"
 
+    @windows_only
     def test_a_hand_typed_filename_does_not_follow_a_different_image(self):
         """A name like "for_the_show.tif" belongs to the image it was typed for."""
         got = Path(output_for_source(r"C:\pics\gate.tif", chosen=r"D:\out\for_the_show.tif"))
@@ -126,6 +148,7 @@ class TestTheBoxTracksTheSource:
         self.pick(app, r"D:\shoot2\gate.tif")
         assert app.output_var.get() == str(Path(r"D:\shoot2\gate_negative.tif"))
 
+    @windows_only
     def test_a_typed_destination_survives_the_next_image(self, app):
         self.pick(app, r"C:\shoot1\barn.tif")
         app.output_var.set(r"E:\final\barn_negative.tif")  # as if typed into the entry

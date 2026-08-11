@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .blocker import recover_coverage
 from .imageio import Image, from_linear
 from .lut import Lut, pchip_eval
 from .profiles import Profile
@@ -165,16 +166,16 @@ def soft_proof(negative: Image, profile: Profile) -> Image:
         raise ValueError("soft_proof expects the colour-blocked RGB negative")
     print_view = data[:, ::-1]  # contact printing un-mirrors the film
 
-    # Ink coverage on the film. The minimum channel is the best single proxy the RGB data
-    # offers: clear film is white in every channel, while any blocker hue drives at least
-    # one channel down. Ink equals the corrected positive level, which is what indexes the
-    # measured response.
+    # Ink coverage on the film, recovered by inverting the profile's own blocker model
+    # (see blocker.recover_coverage) rather than assuming `1 - min(R, G, B)` — that shortcut
+    # is only exact at saturation 1.0. Ink equals the corrected positive level, which is
+    # what indexes the measured response.
     #
     # This stays in the **encoded** working space on purpose. The response was measured
     # against wedge patch values, which are encoded code values, so converting to linear
     # light here would index the curve in the wrong space — the exact class of silent
     # error the explicit working_space parameter exists to prevent.
-    ink = np.clip(1.0 - print_view.min(axis=-1), 0.0, 1.0)
+    ink = recover_coverage(print_view, profile.blocker)
 
     fraction = response.apply(ink.astype(np.float32))
 

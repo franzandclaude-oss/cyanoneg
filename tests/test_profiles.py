@@ -57,6 +57,52 @@ class TestValidation:
         ).is_ready_to_print
 
 
+class TestProvisionalStrictness:
+    """``provisional`` must be a genuine JSON boolean, not something coerced into one.
+
+    ``bool("false")`` is ``True`` in Python, so a naive ``bool(d.get(...))`` conversion in
+    ``from_dict`` would silently accept a malformed profile — a hand-edited or corrupted
+    JSON file with ``"provisional": "false"`` would load as calibrated. ``from_dict`` must
+    pass the raw value through untouched and let ``validate`` reject anything that is not
+    actually a bool.
+    """
+
+    @pytest.mark.parametrize("bad_value", ["false", "true", 0, 1, None, "", []])
+    def test_non_bool_provisional_rejected(self, bad_value):
+        profile = Profile.from_dict(
+            {
+                "name": "Test",
+                "provisional": bad_value,
+                "blocker": {"model": "fixed_hue", "rgb": [64, 128, 0], "saturation": 0.8},
+            }
+        )
+        problems = profile.validate()
+        assert any("provisional" in p for p in problems), (
+            f"{bad_value!r} should have been rejected, got problems={problems!r}"
+        )
+
+    def test_missing_provisional_defaults_to_true(self):
+        profile = Profile.from_dict(
+            {
+                "name": "Test",
+                "blocker": {"model": "fixed_hue", "rgb": [64, 128, 0], "saturation": 0.8},
+            }
+        )
+        assert profile.provisional is True
+        assert profile.validate() == []
+
+    def test_string_false_provisional_raises_on_load(self, tmp_path):
+        """The exact failure mode: a malformed value must not survive a load/save round trip."""
+        path = tmp_path / "malformed.json"
+        d = _valid_profile(
+            blocker={"model": "fixed_hue", "rgb": [64, 128, 0], "saturation": 0.8}
+        ).to_dict()
+        d["provisional"] = "false"
+        path.write_text(json.dumps(d), encoding="utf-8")
+        with pytest.raises(ProfileError, match="provisional"):
+            Profile.load(path)
+
+
 class TestRoundTrip:
     def test_save_load_preserves_everything(self, tmp_path):
         profile = _valid_profile(

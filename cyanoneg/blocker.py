@@ -148,6 +148,48 @@ def fixed_hue_as_zones(rgb: tuple[int, int, int], saturation: float = 1.0) -> li
     ]
 
 
+def recover_coverage(view: np.ndarray, blocker: dict) -> np.ndarray:
+    """Recover per-pixel ink coverage (0 = clear film, 1 = full measured ink) from a
+    colour-blocked negative, by inverting the profile's own blocker model.
+
+    ``view`` is an ``(..., 3)`` array of blocked RGB in ``[0, 1]`` (the same convention
+    :func:`apply_blocker` and :func:`apply_zone_blocker` produce).
+
+    This exists because ``1 - min(R, G, B)`` — the obvious shortcut — is only correct for a
+    blocker that is fully saturated *and* reaches zero in some channel. Below saturation
+    1.0 the minimum channel never reaches zero, so that shortcut silently understates
+    coverage: it degrades smoothly rather than failing loudly, which is exactly the kind of
+    error this codebase otherwise refuses to let through. Inverting the model itself keeps
+    the answer correct at any saturation, and for the zone-varying model too.
+    """
+    model = blocker.get("model")
+    if model == "zone_hue":
+        zones = blocker.get("zones")
+        if not zones:
+            raise ValueError("a zone_hue blocker needs 'zones' to recover coverage")
+        table = zone_curves(zones)
+    else:
+        rgb, saturation = blocker.get("rgb"), blocker.get("saturation")
+        if rgb is None or saturation is None:
+            raise ValueError("a fixed_hue blocker needs measured 'rgb' and 'saturation' to recover coverage")
+        table = zone_curves(fixed_hue_as_zones(rgb, saturation))
+
+    # Invert whichever channel the blocker actually moves the most. That is both the most
+    # informative single channel to read and the only one guaranteed away from a near-zero
+    # range — the failure mode `min(R, G, B)` does not defend against.
+    channel_range = table.max(axis=0) - table.min(axis=0)
+    channel = int(np.argmax(channel_range))
+    if channel_range[channel] < 1e-6:
+        # An unsaturated (or placeholder-white) blocker moves nothing measurable in any
+        # channel; there is no ink to recover because the model itself lays down none.
+        return np.zeros(view.shape[:-1], dtype=np.float32)
+
+    density = np.linspace(0.0, 1.0, table.shape[0])
+    order = np.argsort(table[:, channel])
+    observed = np.clip(view[..., channel], 0.0, 1.0)
+    return np.interp(observed, table[order, channel], density[order]).astype(np.float32)
+
+
 def export_blocker_cube(path, zones: list[dict], size: int = 33, title: str = "cyanoneg blocker"):
     """Write the blocker transform as a 3D .cube (Photoshop: Color Lookup).
 

@@ -158,7 +158,7 @@ class Profile:
                 film=d.get("film", ""),
                 film_batch=d.get("film_batch", ""),
                 working_space=d.get("working_space", "srgb"),
-                provisional=bool(d.get("provisional", True)),
+                provisional=d.get("provisional", True),
                 driver_settings=d.get("driver_settings", {}),
                 blocker=d.get("blocker", {"model": "fixed_hue", "rgb": None, "saturation": None}),
                 exposure=d.get("exposure", {}),
