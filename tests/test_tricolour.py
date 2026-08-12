@@ -1,0 +1,329 @@
+"""Tricolour: three registered negatives from one RGB positive.
+
+The failure modes guarded here are the expensive ones. A wrong channel permutation, a
+wedge slot that is not actually isolated, or a page background that passes UV all produce
+three plausible-looking orange transparencies, and the cost of finding out is a multi-day
+darkroom cycle that cannot be re-run on the same sheet.
+"""
+
+import dataclasses
+import json
+
+import numpy as np
+import pytest
+
+from cyanoneg.imageio import Image
+from cyanoneg.profiles import Profile
+from cyanoneg.tricolour import (
+    ALLOWED_TO_DIFFER,
+    CHANNEL_INDEX,
+    MUST_AGREE,
+    PRINT_ORDER,
+    SOURCE_CHANNEL,
+    TricolourLayer,
+    TricolourSet,
+    TricolourSetError,
+    check_profile_agreement,
+    extract_channel,
+    step_saturate,
+)
+
+
+@pytest.fixture
+def rgb() -> Image:
+    """Three channels holding distinguishable, non-constant data.
+
+    Deliberately not a grey ramp: if all three channels carried the same values, every
+    channel permutation would pass.
+    """
+    h, w = 8, 16
+    r = np.tile(np.linspace(0.0, 1.0, w, dtype=np.float32), (h, 1))
+    g = np.tile(np.linspace(0.25, 0.75, w, dtype=np.float32), (h, 1))
+    b = np.tile(np.linspace(1.0, 0.0, w, dtype=np.float32), (h, 1))
+    return Image(np.stack([r, g, b], axis=-1), "srgb", ppi=300)
+
+
+class TestExtractChannel:
+    @pytest.mark.parametrize(
+        ("layer", "index"),
+        [("cyan", 0), ("magenta", 1), ("yellow", 2)],
+    )
+    def test_extracts_the_layer_s_own_channel_byte_exact(self, rgb, layer, index):
+        """Red→cyan, green→magenta, blue→yellow, and no arithmetic on the way through.
+
+        Byte-exact against the raw slice because anything that merely correlates — a
+        weighted mix, a round trip through linear light — would still look like a
+        reasonable negative while being the wrong tonal scale.
+        """
+        result = extract_channel(rgb, layer)
+
+        assert np.array_equal(result.data, rgb.data[..., index])
+        assert CHANNEL_INDEX[layer] == index
+
+    def test_mono_source_raises_rather_than_tripling(self, rgb):
+        """A greyscale positive has no colour to separate.
+
+        ``to_mono`` early-returns on mono input, so routing through it would have emitted
+        three *identical* negatives and three darkroom sessions would have produced a grey
+        image in three colours. Refusing is the only safe answer.
+        """
+        mono = rgb.replace(rgb.data[..., 0])
+        assert mono.is_mono
+
+        with pytest.raises(ValueError, match="mono"):
+            extract_channel(mono, "magenta")
+
+
+class TestSaturate:
+    def test_amount_one_is_exactly_the_input(self, rgb):
+        """No boost must mean no change at all, not a float32 round trip.
+
+        Scaling happens in linear light, so a naive implementation would decode and
+        re-encode even at 1.0 and shift low code values by a bit or two. That would put a
+        silent difference between "tricolour at boost 1.0" and the mono path, which is the
+        baseline the whole calibration is compared against.
+        """
+        result, clipped = step_saturate(rgb, 1.0)
+
+        assert np.array_equal(result.data, rgb.data)
+        assert clipped == 0.0
+
+    def test_boost_widens_colour_and_leaves_grey_alone(self):
+        """Saturation scales distance from the Rec.709 grey axis; grey has no distance.
+
+        Asserted as two independent properties rather than against expected pixel values:
+        a coloured pixel must move *away* from its own luma, and a neutral one must not
+        move at all. An implementation that scaled about 0.5, or about the channel mean,
+        would satisfy neither.
+        """
+        pixels = np.array([[[0.5, 0.25, 0.25], [0.4, 0.4, 0.4]]], dtype=np.float32)
+        image = Image(pixels, "linear")
+
+        result, _ = step_saturate(image, 1.5)
+
+        coloured_before = pixels[0, 0]
+        coloured_after = result.data[0, 0]
+        assert np.ptp(coloured_after) > np.ptp(coloured_before)
+
+        assert np.allclose(result.data[0, 1], pixels[0, 1], atol=1e-6)
+
+    def test_clipped_fraction_counts_pixels_with_any_component_out_of_range(self):
+        """Pinned to a definition, because a threshold on a vague number is not a warning.
+
+        The definition is: the fraction of *pixels* for which at least one component fell
+        outside [0, 1] after scaling and before clipping. Four pixels are constructed so
+        the answer is known by hand — one grey (safe), one over 1.0 in red, one safely
+        inside, one below 0.0 in red — so the expected value is exactly 0.5. Counting
+        components rather than pixels, or counting after the clip, both give other answers.
+        """
+        pixels = np.array(
+            [[
+                [0.4, 0.4, 0.4],    # neutral: unmoved, in range
+                [1.0, 0.0, 0.0],    # red goes to ~1.79, over
+                [0.5, 0.5, 0.45],   # stays inside
+                [0.0, 0.0, 0.1],    # red goes to ~-0.007, under
+            ]],
+            dtype=np.float32,
+        )
+        image = Image(pixels, "linear")
+
+        _, clipped = step_saturate(image, 2.0)
+
+        assert clipped == pytest.approx(0.5)
+
+
+def _set(**overrides) -> TricolourSet:
+    """A set whose three layers differ only in what genuinely varies between them."""
+    defaults = dict(
+        name="CassArt 300 Sm — Tricolour",
+        saturation_boost=1.35,
+        border_mm=10.0,
+        layers={
+            "magenta": TricolourLayer(profile="P — Magenta", exposure_multiplier=1.5),
+            "yellow": TricolourLayer(profile="P — Yellow", exposure_multiplier=2.75),
+            "cyan": TricolourLayer(profile="P — Cyan", exposure_multiplier=1.1),
+        },
+    )
+    defaults.update(overrides)
+    return TricolourSet(**defaults)
+
+
+class TestProcessConstants:
+    def test_print_order_is_magenta_yellow_cyan(self):
+        """Cyan must be last: the carbonate bleach used for M and Y destroys Prussian blue.
+
+        Pinned as a literal rather than derived from anything, because every other order
+        produces a print and only this one produces the right print. Getting it wrong is
+        found out three darkroom days later, on a sheet that cannot be reused.
+        """
+        assert PRINT_ORDER == ("magenta", "yellow", "cyan")
+
+    def test_source_channel_names_agree_with_channel_index(self):
+        """One mapping, two spellings — they must not be able to drift apart.
+
+        ``CHANNEL_INDEX`` is what the array slicing uses; ``SOURCE_CHANNEL`` is what the
+        set file and manifest say in words. If a future edit changed one and not the other,
+        the negatives and the paperwork describing them would disagree silently.
+        """
+        names = ("red", "green", "blue")
+        assert SOURCE_CHANNEL == {
+            role: names[index] for role, index in CHANNEL_INDEX.items()
+        }
+
+
+class TestSetSerialisation:
+    def test_round_trip_through_json_preserves_the_set(self, tmp_path):
+        """Save then load must be an identity, or a set means something different tomorrow."""
+        tset = _set()
+        path = tset.save(tmp_path / "set.json")
+
+        assert TricolourSet.load(path) == tset
+
+    def test_saved_json_states_the_derived_invariants_for_a_human_reader(self, tmp_path):
+        """Channel and order are written out even though they are derived.
+
+        The file is read by a person standing at an enlarger deciding which sheet to expose
+        next, and "print_order: 1" is the answer to their question. Derived-and-written is
+        safe here only because loading re-checks it against the constants.
+        """
+        d = json.loads(_set().save(tmp_path / "set.json").read_text(encoding="utf-8"))
+
+        assert d["layers"]["magenta"]["print_order"] == 1
+        assert d["layers"]["magenta"]["source_channel"] == "green"
+        assert d["layers"]["cyan"]["print_order"] == 3
+        assert d["layers"]["cyan"]["source_channel"] == "red"
+
+    def test_loading_rejects_a_file_that_contradicts_the_constants(self, tmp_path):
+        """A hand-edited set claiming magenta comes from red must not load.
+
+        This is the whole reason the derived fields are re-checked instead of ignored: a
+        plausible-looking edit would otherwise be silently overridden by the constants, and
+        the operator would trust a file that does not describe what the code does.
+        """
+        d = json.loads(_set().save(tmp_path / "set.json").read_text(encoding="utf-8"))
+        d["layers"]["magenta"]["source_channel"] = "red"
+        path = tmp_path / "bad.json"
+        path.write_text(json.dumps(d), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="source_channel"):
+            TricolourSet.load(path)
+
+    def test_missing_layer_is_rejected(self):
+        """Two negatives are not a tricolour set."""
+        layers = dict(_set().layers)
+        del layers["yellow"]
+
+        problems = _set(layers=layers).validate()
+
+        assert any("yellow" in p for p in problems)
+
+
+def _layer_profile(name: str, **overrides) -> Profile:
+    """A profile as one layer of a set: shared apparatus, its own name and chemistry."""
+    defaults = dict(
+        name=name,
+        paper="CassArt 300 Sm",
+        film="Fixxons",
+        film_batch="2026-07",
+        media_type="Premium Presentation Paper Matte",
+        working_space="srgb",
+        driver_settings={"quality": "high", "colour": "off"},
+        blocker={"model": "fixed_hue", "rgb": [255, 64, 0], "saturation": 1.0},
+        exposure={"spe_seconds": 810},
+    )
+    defaults.update(overrides)
+    return Profile(**defaults)
+
+
+def _layer_profiles(**overrides) -> dict[str, Profile]:
+    profiles = {
+        "magenta": _layer_profile("P — Magenta", chemistry="carbonate bleach, madder root"),
+        "yellow": _layer_profile("P — Yellow", chemistry="carbonate bleach to Fe(III)"),
+        "cyan": _layer_profile("P — Cyan", chemistry="classic, untoned"),
+    }
+    profiles.update(overrides)
+    return profiles
+
+
+class TestProfileAgreement:
+    def test_layers_sharing_apparatus_agree(self):
+        assert check_profile_agreement(_layer_profiles()) == []
+
+    @pytest.mark.parametrize(
+        ("field_name", "value"),
+        [
+            ("film_batch", "2026-08"),
+            ("driver_settings", {"quality": "draft"}),
+            ("blocker", {"model": "fixed_hue", "rgb": [255, 80, 0], "saturation": 1.0}),
+            ("paper", "Somerset Satin"),
+            ("working_space", "adobergb"),
+            ("exposure", {"spe_seconds": 600}),
+        ],
+    )
+    def test_one_layer_out_of_step_is_rejected(self, field_name, value):
+        """Each of these is a different print masquerading as one layer of this print.
+
+        ``film_batch`` and ``driver_settings`` are the silent-error class: the calibration
+        absorbed them, so a layer measured under different ones carries a curve that does
+        not describe the sheet being printed. ``blocker`` matters for a second reason — the
+        page background and the non-owner wedge masks are one colour, so three layers with
+        different blockers cannot share a page at all. ``exposure`` must agree because SPE
+        is the common base that the per-layer multiplier is applied to.
+        """
+        profiles = _layer_profiles(
+            yellow=_layer_profile("P — Yellow", **{field_name: value})
+        )
+
+        problems = check_profile_agreement(profiles)
+
+        assert any(field_name in p for p in problems), problems
+
+    def test_layers_may_differ_in_name_and_chemistry(self):
+        """Each layer is its own profile with its own toning, and its own measured curve."""
+        assert "name" in ALLOWED_TO_DIFFER
+        assert "chemistry" in ALLOWED_TO_DIFFER
+        assert "lut" in ALLOWED_TO_DIFFER
+
+    def test_every_profile_field_is_either_checked_or_deliberately_exempt(self):
+        """The check must fail safe as the profile schema grows.
+
+        A handwritten list of fields-that-must-agree goes stale silently: someone adds
+        ``uv_source`` to ``Profile``, nobody updates the list, and sets with mismatched UV
+        sources start validating. Inverting it — every field must agree unless named in
+        ``ALLOWED_TO_DIFFER`` — makes the stale case a loud test failure here instead.
+        """
+        declared = {f.name for f in dataclasses.fields(Profile)}
+
+        assert ALLOWED_TO_DIFFER <= declared
+        assert declared - ALLOWED_TO_DIFFER == set(MUST_AGREE)
+
+
+class TestResolve:
+    def test_resolve_loads_each_layer_s_profile_by_name(self, tmp_path):
+        for profile in _layer_profiles().values():
+            profile.save(tmp_path / f"{profile.name}.json")
+
+        resolved = _set().resolve(tmp_path)
+
+        assert set(resolved) == set(PRINT_ORDER)
+        assert resolved["magenta"].name == "P — Magenta"
+
+    def test_resolve_reports_the_missing_profile_by_name(self, tmp_path):
+        profiles = _layer_profiles()
+        del profiles["cyan"]
+        for profile in profiles.values():
+            profile.save(tmp_path / f"{profile.name}.json")
+
+        with pytest.raises(TricolourSetError, match="P — Cyan"):
+            _set().resolve(tmp_path)
+
+    def test_resolve_refuses_layers_that_do_not_share_apparatus(self, tmp_path):
+        """Resolution is where the disagreement becomes findable, so it must refuse there."""
+        profiles = _layer_profiles(
+            cyan=_layer_profile("P — Cyan", film_batch="2026-08")
+        )
+        for profile in profiles.values():
+            profile.save(tmp_path / f"{profile.name}.json")
+
+        with pytest.raises(TricolourSetError, match="film_batch"):
+            _set().resolve(tmp_path)
