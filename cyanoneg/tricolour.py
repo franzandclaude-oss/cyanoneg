@@ -20,8 +20,10 @@ from typing import Any
 import numpy as np
 
 from . import imageio as cio
+from .blocker import apply_blocker
 from .imageio import Image
 from .profiles import PROFILE_DIR, Profile
+from .targets import A4_MM, PPI, Target, _mm, apply_frame
 
 #: Rec.709 luma weights, the grey axis saturation is scaled about.
 _REC709 = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
@@ -393,3 +395,199 @@ def extract_channel(image: Image, layer: str) -> Image:
             "separate, and the three negatives would come out identical"
         )
     return image.replace(image.data[..., CHANNEL_INDEX[layer]])
+
+
+# --------------------------------------------------------------------------- page
+
+#: Size of the blocked control region, and the border that carries its fiducials.
+CONTROL_MM = 40.0
+CONTROL_BORDER_MM = 8.0
+
+
+def full_blocker_value(
+    blocker_rgb: tuple[int, int, int], saturation: float = 1.0
+) -> np.ndarray:
+    """The pixel value that lays maximum ink — what "blocked" means on this film.
+
+    Taken from :func:`~cyanoneg.blocker.apply_blocker` rather than written down, so the
+    page background can never drift from the value the wedges compute for themselves.
+    """
+    return apply_blocker(np.zeros((1, 1), dtype=np.float32), blocker_rgb, saturation)[0, 0]
+
+
+def _scale_block(block: np.ndarray, factor: float, space: str) -> np.ndarray:
+    """Resample an RGB block by ``factor``, in linear light.
+
+    Per-channel, because the resize primitive works on single-channel float planes.
+    Resampling encoded values would darken edges; the mono pipeline resamples in linear
+    light for the same reason.
+    """
+    if factor == 1.0:
+        return block
+    from PIL import Image as PILImage
+
+    h, w = block.shape[:2]
+    dst = (max(1, int(round(w * factor))), max(1, int(round(h * factor))))
+    linear = cio.to_linear(block, space)
+    planes = [
+        np.asarray(
+            PILImage.fromarray(linear[..., c].astype(np.float32), mode="F").resize(
+                dst, PILImage.Resampling.LANCZOS
+            ),
+            dtype=np.float32,
+        )
+        for c in range(3)
+    ]
+    return cio.from_linear(np.clip(np.stack(planes, axis=-1), 0.0, 1.0), space)
+
+
+def control_region(
+    blocker_rgb: tuple[int, int, int],
+    saturation: float = 1.0,
+    size_mm: float = CONTROL_MM,
+    border_mm: float = CONTROL_BORDER_MM,
+) -> tuple[np.ndarray, dict]:
+    """A region held at full blocker on *every* layer, framed so it can be cropped.
+
+    Nothing ever exposes it, which is what makes it worth printing. After the full
+    M -> Y -> C cycle it answers three questions at once:
+
+    - does the blocker stay opaque at 2.75x SPE, where it has never been characterised?
+    - what do three coat-and-wash cycles deposit on paper that was never exposed?
+    - and therefore, can the isolated wedges be read after cyan at all — since that stain
+      floor is exactly what would corrupt them?
+
+    The third is why this is cheap insurance rather than a nicety: it settles by
+    measurement a question the plan otherwise settles by assertion.
+
+    Read it in all three channels. A stain invisible in L* can be large in blue, which is
+    the layer most at risk.
+
+    Its fiducials are clear film and do print. That is deliberate: they locate the crop,
+    and they double as a max-exposure reference at that spot on the sheet.
+    """
+    blocked = full_blocker_value(blocker_rgb, saturation)
+    interior_px = _mm(size_mm - 2 * border_mm)
+    interior = np.empty((interior_px, interior_px, 3), dtype=np.float32)
+    interior[:, :] = blocked
+    return apply_frame(interior, _mm(border_mm), tuple(float(v) for v in blocked))
+
+
+def tricolour_page(
+    picture: Image,
+    wedges: dict[str, Target] | None,
+    owner: str,
+    blocker_rgb: tuple[int, int, int],
+    saturation: float = 1.0,
+    *,
+    scale: float = 1.0,
+    page_mm: tuple[float, float] = A4_MM,
+    picture_gap_mm: float = 20.0,
+    control_gap_mm: float = 5.0,
+    slot_gap_mm: float = 5.0,
+) -> tuple[Image, dict]:
+    """Compose one layer's sheet, in print orientation.
+
+    The background is **full blocker, not clear film**. ``calibration_page`` uses white,
+    which is right there — its margins are never coated and never measured. Here it would
+    be wrong three times over: clear film passes UV, so every uncoated margin would take a
+    full exposure on three successive layers, and anything coated outside the picture would
+    go to Dmax, then be bleached and toned, then have Prussian blue laid over it.
+
+    Wedge slots are **isolated, not stacked**: ``owner``'s wedge is drawn and the other two
+    slots are left at background, so each layer's wedge measures that layer alone. A
+    stacked patch read through green carries magenta's absorption plus yellow's plus
+    cyan's, and a curve derived from it linearises the neutral stack — three such curves
+    are one curve read three ways, not three per-layer curves. Leaving the non-owner slots
+    alone is the same operation as "background", so the masking costs nothing.
+
+    ``scale`` moves the picture block only. The wedges and the control are sampled through
+    homographies built from their own fiducials, which absorb a uniform scale change for
+    free, so shrinkage threatens registration of the picture and nothing else.
+
+    Returns the page and a placement dict recording every croppable region in print
+    orientation, which is the orientation a scan is measured in.
+    """
+    if owner not in PRINT_ORDER:
+        raise ValueError(f"unknown owner {owner!r}; expected one of {PRINT_ORDER}")
+    if wedges is not None and set(wedges) != set(PRINT_ORDER):
+        raise ValueError(
+            "wedges must cover every layer so all three sheets share one geometry; "
+            f"got {sorted(wedges)}"
+        )
+
+    blocked = full_blocker_value(blocker_rgb, saturation)
+    page_w, page_h = _mm(page_mm[0]), _mm(page_mm[1])
+
+    picture_block = _scale_block(picture.data, scale, picture.space)
+    pic_h, pic_w = picture_block.shape[:2]
+
+    control, control_fiducials = control_region(blocker_rgb, saturation)
+    ctl_h, ctl_w = control.shape[:2]
+
+    slot_views: dict[str, np.ndarray] = {}
+    slot_h = slot_w = 0
+    rows: list[tuple[str, int, int]] = [("picture", pic_h, pic_w)]
+    if wedges is not None:
+        slot_views = {
+            role: np.ascontiguousarray(w.film[:, ::-1]) for role, w in wedges.items()
+        }
+        shapes = {v.shape[:2] for v in slot_views.values()}
+        if len(shapes) != 1:
+            raise ValueError(
+                "the three wedges differ in size, so the slots would not line up across "
+                "layers — generate them with identical levels and redundancy"
+            )
+        slot_h, slot_w = shapes.pop()
+        rows.append(("wedges", slot_h, 3 * slot_w + 2 * _mm(slot_gap_mm)))
+    rows.append(("control", ctl_h, ctl_w))
+
+    gaps = [_mm(picture_gap_mm), _mm(control_gap_mm)][: len(rows) - 1]
+    block_h = sum(h for _, h, _ in rows) + sum(gaps)
+    block_w = max(w for _, _, w in rows)
+    if block_w > page_w or block_h > page_h:
+        raise ValueError(
+            f"the sheet needs {block_w / PPI * 25.4:.0f} x {block_h / PPI * 25.4:.0f} mm "
+            f"but the page is {page_mm[0]:.0f} x {page_mm[1]:.0f} mm"
+        )
+
+    canvas = np.empty((page_h, page_w, 3), dtype=np.float32)
+    canvas[:, :] = blocked
+
+    def _record(x: int, y: int, w: int, h: int, **extra: Any) -> dict:
+        return {
+            "x_px": int(x),
+            "y_px": int(y),
+            "w_px": int(w),
+            "h_px": int(h),
+            "x_mm": round(x / PPI * 25.4, 1),
+            "y_mm": round(y / PPI * 25.4, 1),
+            **extra,
+        }
+
+    placement: dict[str, Any] = {}
+    y = (page_h - block_h) // 2
+    for i, (kind, h, w) in enumerate(rows):
+        x = (page_w - w) // 2
+        if kind == "picture":
+            canvas[y : y + h, x : x + w] = picture_block
+            placement["picture"] = _record(x, y, w, h, scale=scale)
+        elif kind == "wedges":
+            slots = {}
+            for role in PRINT_ORDER:
+                if role == owner:
+                    canvas[y : y + slot_h, x : x + slot_w] = slot_views[role]
+                slots[role] = _record(
+                    x, y, slot_w, slot_h, owned=role == owner, sidecar=f"wedge_{role}.json"
+                )
+                x += slot_w + _mm(slot_gap_mm)
+            placement["wedges"] = slots
+        else:
+            canvas[y : y + h, x : x + w] = control
+            placement["control"] = _record(
+                x, y, w, h, fiducials=control_fiducials, read_in="all three channels"
+            )
+        if i < len(gaps):
+            y += h + gaps[i]
+
+    return Image(canvas, picture.space, ppi=PPI, bit_depth=picture.bit_depth), placement

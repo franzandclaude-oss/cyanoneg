@@ -12,15 +12,21 @@ import json
 import numpy as np
 import pytest
 
-from cyanoneg.imageio import Image
+from cyanoneg.imageio import DEFAULT_SPACE, Image
 from cyanoneg.profiles import Profile
+from cyanoneg.targets import PPI, _mm, step_wedge
 from cyanoneg.tricolour import (
     ALLOWED_TO_DIFFER,
     CHANNEL_INDEX,
+    CONTROL_BORDER_MM,
+    CONTROL_MM,
     MUST_AGREE,
     RESPONSE_QUANTITY,
+    control_region,
     format_seconds,
+    full_blocker_value,
     layer_exposure,
+    tricolour_page,
     PRINT_ORDER,
     SOURCE_CHANNEL,
     TricolourLayer,
@@ -443,3 +449,169 @@ class TestLayerScale:
         tset.layers["magenta"] = dataclasses.replace(tset.layers["magenta"], scale=0.995)
         out = tset.save(tmp_path / "set.json")
         assert TricolourSet.load(out).layers["magenta"].scale == 0.995
+
+
+# --------------------------------------------------------------------------- page
+
+BLOCKER_RGB = (255, 64, 0)
+SATURATION = 1.0
+
+
+def _wedges() -> dict:
+    """One wedge per layer, identical geometry — 16 x k4, the settled print #1 target."""
+    return {
+        role: step_wedge(BLOCKER_RGB, saturation=SATURATION, levels=16, redundancy=4)
+        for role in PRINT_ORDER
+    }
+
+
+def _picture(w_mm: float = 150.0, h_mm: float = 120.0) -> Image:
+    data = np.full((_mm(h_mm), _mm(w_mm), 3), 0.5, dtype=np.float32)
+    return Image(data, DEFAULT_SPACE, ppi=PPI)
+
+
+class TestPageBackground:
+    def test_background_is_full_blocker_not_clear_film(self):
+        """Clear film passes UV. calibration_page uses white because its margins are never
+        coated; here the same choice would give every uncoated margin a full exposure on
+        three successive layers, and take anything coated outside the picture to Dmax."""
+        page, _ = tricolour_page(_picture(), _wedges(), "magenta", BLOCKER_RGB, SATURATION)
+        blocked = full_blocker_value(BLOCKER_RGB, SATURATION)
+        for corner in (page.data[0, 0], page.data[0, -1], page.data[-1, 0], page.data[-1, -1]):
+            assert np.allclose(corner, blocked)
+        assert not np.allclose(page.data[0, 0], 1.0), "clear film would expose the margin"
+
+    def test_page_is_a4_at_printer_resolution(self):
+        page, _ = tricolour_page(_picture(), _wedges(), "cyan", BLOCKER_RGB, SATURATION)
+        h, w = page.data.shape[:2]
+        assert (round(w / PPI * 25.4), round(h / PPI * 25.4)) == (210, 297)
+
+
+class TestWedgeIsolation:
+    """R2: each layer's wedge measures that layer alone.
+
+    A stacked patch read through green carries magenta's absorption plus yellow's plus
+    cyan's, so a curve derived from it linearises the neutral stack. Three such curves are
+    one curve read three ways.
+    """
+
+    @pytest.mark.parametrize("owner", PRINT_ORDER)
+    def test_only_the_owner_draws_its_wedge(self, owner):
+        page, place = tricolour_page(_picture(), _wedges(), owner, BLOCKER_RGB, SATURATION)
+        blocked = full_blocker_value(BLOCKER_RGB, SATURATION)
+        for role, slot in place["wedges"].items():
+            region = page.data[
+                slot["y_px"] : slot["y_px"] + slot["h_px"],
+                slot["x_px"] : slot["x_px"] + slot["w_px"],
+            ]
+            if role == owner:
+                assert slot["owned"]
+                assert not np.allclose(region, blocked), "the owner's wedge is missing"
+            else:
+                assert not slot["owned"]
+                assert np.allclose(region, blocked), f"{role} slot is not isolated"
+
+    def test_slot_geometry_is_identical_across_layers(self):
+        """The three sheets must register. Differing slots would misalign the whole page."""
+        places = [
+            tricolour_page(_picture(), _wedges(), owner, BLOCKER_RGB, SATURATION)[1]
+            for owner in PRINT_ORDER
+        ]
+        for role in PRINT_ORDER:
+            rects = {
+                (p["wedges"][role]["x_px"], p["wedges"][role]["y_px"],
+                 p["wedges"][role]["w_px"], p["wedges"][role]["h_px"])
+                for p in places
+            }
+            assert len(rects) == 1, f"{role} slot moves between layers"
+
+    def test_mismatched_wedges_are_refused(self):
+        wedges = _wedges()
+        wedges["yellow"] = step_wedge(BLOCKER_RGB, levels=32, redundancy=4)
+        with pytest.raises(ValueError, match="differ in size"):
+            tricolour_page(_picture(), wedges, "magenta", BLOCKER_RGB, SATURATION)
+
+    def test_partial_wedge_set_is_refused(self):
+        wedges = _wedges()
+        del wedges["cyan"]
+        with pytest.raises(ValueError, match="every layer"):
+            tricolour_page(_picture(), wedges, "magenta", BLOCKER_RGB, SATURATION)
+
+
+class TestControlRegion:
+    """P1: one region, blocked on every layer, answering three questions at once."""
+
+    def test_is_forty_millimetres_with_a_uniform_interior(self):
+        control, _ = control_region(BLOCKER_RGB, SATURATION)
+        h, w = control.shape[:2]
+        assert (round(w / PPI * 25.4), round(h / PPI * 25.4)) == (CONTROL_MM, CONTROL_MM)
+        b = _mm(CONTROL_BORDER_MM)
+        blocked = full_blocker_value(BLOCKER_RGB, SATURATION)
+        assert np.allclose(control[b:-b, b:-b], blocked)
+
+    def test_carries_four_fiducials_one_hollow(self):
+        """It has to be locatable and croppable, like a wedge."""
+        _, fiducials = control_region(BLOCKER_RGB, SATURATION)
+        assert set(fiducials) == {"top_left", "top_right", "bottom_left", "bottom_right"}
+        assert [k for k, v in fiducials.items() if v["hollow"]] == ["top_left"]
+
+    @pytest.mark.parametrize("owner", PRINT_ORDER)
+    def test_no_layer_ever_exposes_it(self, owner):
+        """Not just the owning layer — nothing may print there, on any sheet."""
+        page, place = tricolour_page(_picture(), _wedges(), owner, BLOCKER_RGB, SATURATION)
+        c = place["control"]
+        b = _mm(CONTROL_BORDER_MM)
+        interior = page.data[
+            c["y_px"] + b : c["y_px"] + c["h_px"] - b,
+            c["x_px"] + b : c["x_px"] + c["w_px"] - b,
+        ]
+        assert np.allclose(interior, full_blocker_value(BLOCKER_RGB, SATURATION))
+
+    def test_placement_is_recorded_and_stable(self):
+        rects = set()
+        for owner in PRINT_ORDER:
+            _, place = tricolour_page(_picture(), _wedges(), owner, BLOCKER_RGB, SATURATION)
+            c = place["control"]
+            rects.add((c["x_px"], c["y_px"], c["w_px"], c["h_px"]))
+            assert c["read_in"] == "all three channels"
+        assert len(rects) == 1
+
+
+class TestPageScale:
+    def test_scale_moves_the_picture_and_leaves_the_furniture(self):
+        """P2: the wedges absorb a uniform scale change through their own homographies."""
+        _, base = tricolour_page(_picture(), _wedges(), "magenta", BLOCKER_RGB, SATURATION)
+        _, shrunk = tricolour_page(
+            _picture(), _wedges(), "magenta", BLOCKER_RGB, SATURATION, scale=0.99
+        )
+        assert shrunk["picture"]["w_px"] < base["picture"]["w_px"]
+        assert shrunk["picture"]["scale"] == 0.99
+        for role in PRINT_ORDER:
+            assert shrunk["wedges"][role]["w_px"] == base["wedges"][role]["w_px"]
+            assert shrunk["wedges"][role]["h_px"] == base["wedges"][role]["h_px"]
+        assert shrunk["control"]["w_px"] == base["control"]["w_px"]
+
+    def test_scale_of_one_is_a_true_no_op(self):
+        page_a, _ = tricolour_page(_picture(), _wedges(), "cyan", BLOCKER_RGB, SATURATION)
+        page_b, _ = tricolour_page(
+            _picture(), _wedges(), "cyan", BLOCKER_RGB, SATURATION, scale=1.0
+        )
+        assert np.array_equal(page_a.data, page_b.data)
+
+
+class TestPageFit:
+    def test_settled_layout_fits_a4_with_room(self):
+        """picture 120 + gap 20 + wedges 60 + gap 5 + control 40 = 245 of 297."""
+        _, place = tricolour_page(_picture(), _wedges(), "magenta", BLOCKER_RGB, SATURATION)
+        top = place["picture"]["y_px"]
+        bottom = place["control"]["y_px"] + place["control"]["h_px"]
+        assert round((bottom - top) / PPI * 25.4) == 245
+        assert top / PPI * 25.4 == pytest.approx(26, abs=1)
+
+    def test_oversized_picture_raises_rather_than_crops(self):
+        with pytest.raises(ValueError, match="but the page is"):
+            tricolour_page(_picture(200, 260), _wedges(), "magenta", BLOCKER_RGB, SATURATION)
+
+    def test_unknown_owner_is_refused(self):
+        with pytest.raises(ValueError, match="unknown owner"):
+            tricolour_page(_picture(), _wedges(), "green", BLOCKER_RGB, SATURATION)
