@@ -920,6 +920,30 @@ class TestManifest:
         assert recorded["calibration_identity"]["film_batch"] == _measured_base().film_batch
         assert calibration_fingerprint(altered) != recorded["calibration_fingerprint"]
 
+    def test_each_layer_records_the_slot_it_actually_owns(self, tmp_path):
+        """Found by looking at the composed sheets rather than by a test.
+
+        The page geometry is identical across layers, so it is tempting to record one
+        placement for the run. But ``owned`` is a property of a *sheet*: folding three
+        sheets' flags into one record is right for exactly one of them, and it was the
+        last one written. The scan-back reads this to know which slot to crop, so two
+        layers out of three would have been cropped to a slot that was never printed.
+        """
+        tset, pdir = _seeded(tmp_path)
+        result = make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="S", profile_dir=pdir, wedges=True,
+        )
+        for role in PRINT_ORDER:
+            slot = result.manifest["layers"][role]["wedge_slot"]
+            assert slot["owned"] is True, f"{role} does not own its own slot"
+            shared = result.manifest["placement"]["wedges"][role]
+            assert (slot["x_px"], slot["y_px"]) == (shared["x_px"], shared["y_px"])
+
+        # The shared record must not carry a flag that can only be true for one sheet.
+        for slot in result.manifest["placement"]["wedges"].values():
+            assert "owned" not in slot
+
     def test_embeds_the_lut_that_ran(self, tmp_path):
         tset, pdir = _seeded(tmp_path)
         result = make_tricolour(

@@ -836,7 +836,7 @@ def make_tricolour(
     paths: dict[str, Path] = {}
     layer_manifest: dict[str, Any] = {}
     fiducials: dict[str, Any] = {}
-    placement: dict[str, Any] = {}
+    placements: dict[str, dict[str, Any]] = {}
 
     for role in PRINT_ORDER:
         layer, profile = tset.layers[role], profiles[role]
@@ -870,8 +870,13 @@ def make_tricolour(
         cio.save_tiff(path, film)
         paths[role] = path
         fiducials[role] = geometry["fiducials"]
+        placements[role] = placement
 
         layer_manifest[role] = {
+            # This layer's own slot, recorded per layer because which slot a sheet owns
+            # is the one thing about the page that is *not* shared between them. The
+            # scan-back reads this to know what to crop.
+            "wedge_slot": placement["wedges"][role] if wedge_targets else None,
             "print_order": PRINT_ORDER.index(role) + 1,
             "source_channel": SOURCE_CHANNEL[role],
             "response_quantity": RESPONSE_QUANTITY[role],
@@ -891,6 +896,22 @@ def make_tricolour(
                 },
             },
             "geometry": geometry,
+        }
+
+    # Page geometry is identical across the three layers by construction, and tested to be.
+    # The per-layer ``owned`` flag is deliberately stripped here: it is a property of a
+    # sheet, not of the page, and folding three sheets' flags into one shared record can
+    # only ever be right for one of them.
+    shared = placements[PRINT_ORDER[0]]
+    page_geometry: dict[str, Any] = {
+        "picture": shared["picture"],
+        "control": shared["control"],
+        "note": "identical on all three sheets; each layer's own slot is under layers.<role>",
+    }
+    if "wedges" in shared:
+        page_geometry["wedges"] = {
+            role: {k: v for k, v in slot.items() if k != "owned"}
+            for role, slot in shared["wedges"].items()
         }
 
     provisional = [r for r in PRINT_ORDER if profiles[r].provisional]
@@ -923,7 +944,7 @@ def make_tricolour(
             "warn_above": CLIP_WARN,
         },
         "blocker": {"rgb": list(blocker_rgb), "saturation": saturation},
-        "placement": placement,
+        "placement": page_geometry,
         "layers": layer_manifest,
         "warnings": warnings,
     }
