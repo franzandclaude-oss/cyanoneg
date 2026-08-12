@@ -204,3 +204,36 @@ class TestShippedProfiles:
             blocker = Profile.load(PROFILE_DIR / f"{name}.json").blocker
             assert tuple(blocker["rgb"]) != (255, 0, 0), f"{name} still holds the placeholder"
             assert blocker["model"] == "fixed_hue"
+
+    def test_roundtrip_preserves_every_key(self, tmp_path):
+        """Load then save must not quietly drop a key the JSON already carries.
+
+        ``to_dict`` and ``from_dict`` both work from fixed key lists, so a field present
+        in the file but absent from the dataclass survives reading and vanishes on write.
+        ``scan_settings`` did exactly that. It matters beyond one field: seeding a
+        tricolour set clones a measured profile three times, so anything lost here is lost
+        from all three layer profiles at once — and the agreement check in
+        ``tricolour.MUST_AGREE`` is built from the dataclass, so it cannot flag what the
+        dataclass never admitted existed.
+
+        Written against the shipped profile rather than a constructed one so that the next
+        undeclared field is caught too.
+        """
+        source = json.loads((PROFILE_DIR / "CassArt 300 Sm.json").read_text(encoding="utf-8"))
+        out = tmp_path / "roundtrip.json"
+        Profile.load(PROFILE_DIR / "CassArt 300 Sm.json").save(out)
+        written = json.loads(out.read_text(encoding="utf-8"))
+
+        missing = sorted(set(source) - set(written))
+        assert not missing, f"round-trip dropped {missing}"
+
+    def test_scan_settings_survives_and_is_checkable(self, tmp_path):
+        """The scan path travels with the profile, and the set agreement check can see it."""
+        from cyanoneg.tricolour import MUST_AGREE
+
+        assert "scan_settings" in MUST_AGREE, "layers could disagree on how they were scanned"
+        loaded = Profile.load(PROFILE_DIR / "CassArt 300 Sm.json")
+        assert loaded.scan_settings["device"] == "Epson Perfection V600"
+        out = tmp_path / "rt.json"
+        loaded.save(out)
+        assert Profile.load(out).scan_settings == loaded.scan_settings

@@ -53,6 +53,13 @@ class Profile:
         default_factory=lambda: {"model": "fixed_hue", "rgb": None, "saturation": None}
     )
     exposure: dict[str, Any] = field(default_factory=dict)
+    #: How the wedge was scanned: device, colour space, bit depth, ppi, and whether the
+    #: scanner's own corrections were off. A curve measured through a different scan path
+    #: is not comparable to this one, so the path has to travel with the profile rather
+    #: than live in someone's memory. Declared rather than left as a stray JSON key: an
+    #: undeclared key is dropped on the first load/save round-trip, which would strip it
+    #: from every profile cloned to seed a tricolour set.
+    scan_settings: dict[str, Any] = field(default_factory=dict)
     lut: Lut = field(default_factory=Lut.identity)
     measurements: dict[str, Any] = field(default_factory=lambda: {"raw_patches": [], "scan_date": None})
 
@@ -137,6 +144,7 @@ class Profile:
             "driver_settings": self.driver_settings,
             "blocker": self.blocker,
             "exposure": self.exposure,
+            "scan_settings": self.scan_settings,
             "lut": {"size": self.lut.size, "values": [round(float(v), 9) for v in self.lut.values]},
             "measurements": self.measurements,
         }
@@ -162,6 +170,7 @@ class Profile:
                 driver_settings=d.get("driver_settings", {}),
                 blocker=d.get("blocker", {"model": "fixed_hue", "rgb": None, "saturation": None}),
                 exposure=d.get("exposure", {}),
+                scan_settings=d.get("scan_settings", {}),
                 lut=lut,
                 measurements=d.get("measurements", {"raw_patches": [], "scan_date": None}),
             )
