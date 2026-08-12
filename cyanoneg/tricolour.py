@@ -18,12 +18,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from PIL import Image as PILImage
 
 from . import imageio as cio
 from .blocker import apply_blocker
 from .imageio import Image
 from .profiles import PROFILE_DIR, Profile
-from .targets import A4_MM, PPI, Target, _mm, apply_frame
+from .targets import A4_MM, PPI, Target, _font, _mm, apply_frame
 
 #: Rec.709 luma weights, the grey axis saturation is scaled about.
 _REC709 = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
@@ -395,6 +396,112 @@ def extract_channel(image: Image, layer: str) -> Image:
             "separate, and the three negatives would come out identical"
         )
     return image.replace(image.data[..., CHANNEL_INDEX[layer]])
+
+
+# --------------------------------------------------------------------------- frame
+
+#: The letter stamped into each layer's border. Three near-identical orange
+#: transparencies are otherwise told apart only by holding them up to the light.
+GLYPH = {"cyan": "C", "magenta": "M", "yellow": "Y"}
+
+#: How much ink the glyph lays, as a fraction of full blocker.
+#:
+#: Not clear film. ``detect_fiducials`` thresholds on the dark tail of the scan, and a
+#: clear-film glyph would print as dark as a fiducial. It is belt-and-braces rather than
+#: the only defence — candidates must also pass ``squareness > 0.55``, ``fill > 0.45`` and
+#: a size band, which a letterform is unlikely to satisfy — but it costs nothing, and the
+#: placement below removes the risk structurally anyway.
+GLYPH_COVERAGE = 0.5
+
+
+def step_frame(
+    image: Image,
+    layer: str,
+    border_px: int,
+    blocker_rgb: tuple[int, int, int],
+    saturation: float = 1.0,
+    *,
+    glyph: bool = True,
+) -> tuple[Image, dict]:
+    """Wrap a layer's picture in a border with fiducials, and stamp it with its letter.
+
+    The border blocks UV at the sheet edge, leaving clean white paper that absorbs
+    edge-etch, and its fiducials print as the darkest marks on the sheet. Layer 1 prints
+    them onto the paper; layers 2 and 3 align to what is already there. Identical absolute
+    positions on all three mean a fringed mark *is* misregistration — the check is a light
+    table, not software.
+
+    The glyph is drawn on its own sub-canvas, **mirrored**, and then pasted in. The page is
+    composed in print orientation and flipped once on the way to film, so a letter drawn
+    the right way round here would come out reversed on the film — which is the side
+    actually read in a dim room.
+
+    It is centred on the top border, between the two upper fiducials rather than beyond
+    them. ``detect_fiducials`` takes the bounding box of all candidate centres and picks
+    the blob nearest each corner of it, so a mark *inside* that box cannot redefine the
+    frame even if it were detected. Placement, not just coverage, is what makes this safe.
+    """
+    if layer not in GLYPH:
+        raise ValueError(f"unknown layer {layer!r}; expected one of {tuple(GLYPH)}")
+
+    blocked = full_blocker_value(blocker_rgb, saturation)
+    framed, fiducials = apply_frame(
+        image.data, border_px, tuple(float(v) for v in blocked)
+    )
+    geometry: dict[str, Any] = {"fiducials": fiducials, "border_px": int(border_px)}
+
+    if not glyph:
+        geometry["glyph"] = None
+        return Image(framed, image.space, ppi=image.ppi, bit_depth=image.bit_depth), geometry
+
+    stamp = _glyph_stamp(GLYPH[layer], border_px, blocked)
+    gh, gw = stamp.shape[:2]
+    fid_size = fiducials["top_left"]["size_px"]
+    fid_right = fiducials["top_right"]["x_px"]
+    fid_left = fiducials["top_left"]["x_px"] + fid_size
+    if gw >= fid_right - fid_left:
+        raise ValueError(
+            "the glyph is wider than the gap between the upper fiducials; it would sit "
+            "outside their span and could redefine the detected frame"
+        )
+    x = (framed.shape[1] - gw) // 2
+    y = (border_px - gh) // 2
+    framed[y : y + gh, x : x + gw] = stamp
+
+    geometry["glyph"] = {
+        "letter": GLYPH[layer],
+        "x_px": int(x),
+        "y_px": int(y),
+        "w_px": int(gw),
+        "h_px": int(gh),
+        "coverage": GLYPH_COVERAGE,
+        "mirrored": True,
+    }
+    return Image(framed, image.space, ppi=image.ppi, bit_depth=image.bit_depth), geometry
+
+
+def _glyph_stamp(letter: str, border_px: int, blocked: np.ndarray) -> np.ndarray:
+    """Draw ``letter`` on a border-coloured tile, then mirror it for the film flip."""
+    from PIL import ImageDraw
+
+    h = max(8, int(border_px * 0.7))
+    w = h
+    tile = np.empty((h, w, 3), dtype=np.float32)
+    tile[:, :] = blocked
+
+    pil = PILImage.fromarray((tile * 255.0 + 0.5).astype(np.uint8), mode="RGB")
+    draw = ImageDraw.Draw(pil)
+    ink = blocked + GLYPH_COVERAGE * (1.0 - blocked)
+    font = _font(max(6, int(h * 0.8)))
+    box = draw.textbbox((0, 0), letter, font=font)
+    draw.text(
+        ((w - (box[2] - box[0])) // 2 - box[0], (h - (box[3] - box[1])) // 2 - box[1]),
+        letter,
+        fill=tuple(int(round(v * 255.0)) for v in ink),
+        font=font,
+    )
+    drawn = np.asarray(pil, dtype=np.float32) / 255.0
+    return np.ascontiguousarray(drawn[:, ::-1])  # mirror now; the page flips once, later
 
 
 # --------------------------------------------------------------------------- page

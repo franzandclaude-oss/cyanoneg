@@ -22,10 +22,12 @@ from cyanoneg.tricolour import (
     CONTROL_MM,
     MUST_AGREE,
     RESPONSE_QUANTITY,
+    _glyph_stamp,
     control_region,
     format_seconds,
     full_blocker_value,
     layer_exposure,
+    step_frame,
     tricolour_page,
     PRINT_ORDER,
     SOURCE_CHANNEL,
@@ -451,10 +453,78 @@ class TestLayerScale:
         assert TricolourSet.load(out).layers["magenta"].scale == 0.995
 
 
-# --------------------------------------------------------------------------- page
+# --------------------------------------------------------------------------- frame
 
 BLOCKER_RGB = (255, 64, 0)
 SATURATION = 1.0
+
+
+class TestFrame:
+    def test_border_is_added_on_every_side(self):
+        framed, _ = step_frame(
+            _picture(130, 100), "magenta", _mm(10), BLOCKER_RGB, SATURATION
+        )
+        h, w = framed.data.shape[:2]
+        assert (round(w / PPI * 25.4), round(h / PPI * 25.4)) == (150, 120)
+
+    def test_fiducials_are_identical_across_layers(self):
+        """Layer 1 prints these onto the paper; 2 and 3 align to them. If they moved
+        between layers, a perfectly registered sheet would still show a fringe."""
+        geometries = [
+            step_frame(_picture(), role, _mm(10), BLOCKER_RGB, SATURATION)[1]["fiducials"]
+            for role in PRINT_ORDER
+        ]
+        assert all(g == geometries[0] for g in geometries)
+
+    def test_glyph_is_not_clear_film(self):
+        """R6: a clear-film glyph prints as dark as a fiducial."""
+        framed, geo = step_frame(_picture(), "yellow", _mm(10), BLOCKER_RGB, SATURATION)
+        g = geo["glyph"]
+        region = framed.data[
+            g["y_px"] : g["y_px"] + g["h_px"], g["x_px"] : g["x_px"] + g["w_px"]
+        ]
+        assert not np.isclose(region, 1.0).all(axis=-1).any(), "glyph reaches clear film"
+
+    def test_glyph_sits_inside_the_upper_fiducial_span(self):
+        """The structural guarantee, stronger than the coverage one.
+
+        ``detect_fiducials`` takes the bounding box of all candidate centres and picks the
+        blob nearest each corner. A mark between the two upper fiducials cannot move that
+        box, so even a detected glyph could not redefine the frame.
+        """
+        _, geo = step_frame(_picture(), "cyan", _mm(10), BLOCKER_RGB, SATURATION)
+        f, g = geo["fiducials"], geo["glyph"]
+        left = f["top_left"]["x_px"] + f["top_left"]["size_px"]
+        right = f["top_right"]["x_px"]
+        assert left < g["x_px"]
+        assert g["x_px"] + g["w_px"] < right
+
+    def test_glyph_reads_correctly_on_the_film(self):
+        """Drawn mirrored, because the page is flipped once on the way to film.
+
+        Checked on 'C', whose spine is on the left: after the flip the ink mass must lie
+        left of centre. A glyph drawn the right way round here would fail this.
+        """
+        blocked = full_blocker_value(BLOCKER_RGB, SATURATION)
+        stamp = _glyph_stamp("C", _mm(10), blocked)
+        ink = ~np.isclose(stamp, blocked, atol=1e-3).all(axis=-1)
+        assert not np.array_equal(ink, ink[:, ::-1]), "a symmetric stamp proves nothing"
+        film = ink[:, ::-1]
+        half = film.shape[1] // 2
+        assert film[:, :half].sum() > film[:, half:].sum()
+
+    def test_glyph_can_be_switched_off(self):
+        _, geo = step_frame(
+            _picture(), "magenta", _mm(10), BLOCKER_RGB, SATURATION, glyph=False
+        )
+        assert geo["glyph"] is None
+
+    def test_unknown_layer_is_refused(self):
+        with pytest.raises(ValueError, match="unknown layer"):
+            step_frame(_picture(), "green", _mm(10), BLOCKER_RGB, SATURATION)
+
+
+# --------------------------------------------------------------------------- page
 
 
 def _wedges() -> dict:
