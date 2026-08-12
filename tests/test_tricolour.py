@@ -18,6 +18,9 @@ from cyanoneg.tricolour import (
     ALLOWED_TO_DIFFER,
     CHANNEL_INDEX,
     MUST_AGREE,
+    RESPONSE_QUANTITY,
+    format_seconds,
+    layer_exposure,
     PRINT_ORDER,
     SOURCE_CHANNEL,
     TricolourLayer,
@@ -327,3 +330,116 @@ class TestResolve:
 
         with pytest.raises(TricolourSetError, match="film_batch"):
             _set().resolve(tmp_path)
+
+
+class TestResponseQuantity:
+    def test_each_layer_is_read_through_its_complement(self):
+        """Magenta absorbs green, yellow absorbs blue, cyan absorbs red.
+
+        Reading a yellow wedge in L* is the failure this constant exists to prevent: L*
+        barely moves across yellow's whole density range, so the derived curve would be
+        shaped by noise while looking like a measurement.
+        """
+        assert RESPONSE_QUANTITY == {
+            "cyan": "lstar_r",
+            "magenta": "lstar_g",
+            "yellow": "lstar_b",
+        }
+
+    def test_every_layer_has_one(self):
+        assert set(RESPONSE_QUANTITY) == set(PRINT_ORDER)
+
+
+class TestLayerExposure:
+    def test_worked_values_for_the_measured_paper(self):
+        profile = _layer_profile("P", exposure={"spe_seconds": 810})
+        got = {
+            role: layer_exposure(profile, _set().layers[role])["instruction_seconds"]
+            for role in PRINT_ORDER
+        }
+        assert got == {"magenta": 1215, "yellow": 2228, "cyan": 891}
+
+    def test_display_matches_the_recorded_spe(self):
+        """810 s renders as 13:30, which is how HANDOFF records the measured SPE.
+
+        A self-check on the formatter: if mm:ss were wrong, the one exposure we have an
+        independently recorded rendering of would disagree.
+        """
+        assert format_seconds(810) == "13:30"
+        assert format_seconds(1215) == "20:15"
+        assert format_seconds(2228) == "37:08"
+        assert format_seconds(891) == "14:51"
+
+    def test_half_second_rounds_up(self):
+        """810 x 2.75 is 2227.5 exactly; the timer takes whole seconds."""
+        block = layer_exposure(
+            _layer_profile("P"), TricolourLayer(profile="P", exposure_multiplier=2.75)
+        )
+        assert block["computed_seconds"] == 2227.5
+        assert block["instruction_seconds"] == 2228
+
+    def test_float_noise_is_kept_out_of_the_record(self):
+        """810 x 1.1 is 891.0000000000001 in float64; a manifest a person diffs should not say so."""
+        block = layer_exposure(
+            _layer_profile("P"), TricolourLayer(profile="P", exposure_multiplier=1.1)
+        )
+        assert block["computed_seconds"] == 891.0
+        assert repr(block["computed_seconds"]) == "891.0"
+
+    def test_base_spe_is_reported_unmultiplied(self):
+        """The profile's own value travels with the result, so double application is visible."""
+        block = layer_exposure(
+            _layer_profile("P"), TricolourLayer(profile="P", exposure_multiplier=2.75)
+        )
+        assert block["base_spe_seconds"] == 810
+        assert block["exposure_multiplier"] == 2.75
+
+    def test_missing_spe_is_refused_by_name(self):
+        with pytest.raises(TricolourSetError, match="spe_seconds"):
+            layer_exposure(
+                _layer_profile("P", exposure={}),
+                TricolourLayer(profile="P", exposure_multiplier=1.5),
+            )
+
+    def test_nonsense_spe_is_refused(self):
+        with pytest.raises(TricolourSetError):
+            layer_exposure(
+                _layer_profile("P", exposure={"spe_seconds": 0}),
+                TricolourLayer(profile="P", exposure_multiplier=1.5),
+            )
+
+    def test_multiplier_is_never_stored_in_a_profile(self):
+        """Single source of truth: the profile keeps the base, the set keeps the multiplier.
+
+        Guards the future — a later refactor that helpfully caches the working exposure on
+        the profile would make the multiplier applicable twice.
+        """
+        profile = _layer_profile("P", exposure={"spe_seconds": 810})
+        layer_exposure(profile, _set().layers["yellow"])
+        assert profile.exposure == {"spe_seconds": 810}
+
+
+class TestLayerScale:
+    def test_defaults_to_one(self):
+        assert all(layer.scale == 1.0 for layer in _set().layers.values())
+        assert _set().validate() == []
+
+    @pytest.mark.parametrize("bad", [0.5, 1.5, 0.0, -1.0])
+    def test_rejects_implausible_values(self, bad):
+        """Cotton rag moves 0.5-1%. Anything beyond that is a typo, not a measurement."""
+        tset = _set()
+        tset.layers["yellow"] = dataclasses.replace(tset.layers["yellow"], scale=bad)
+        problems = tset.validate()
+        assert any("scale" in p for p in problems)
+
+    @pytest.mark.parametrize("good", [0.99, 1.0, 1.01])
+    def test_accepts_real_shrinkage(self, good):
+        tset = _set()
+        tset.layers["yellow"] = dataclasses.replace(tset.layers["yellow"], scale=good)
+        assert tset.validate() == []
+
+    def test_survives_the_set_round_trip(self, tmp_path):
+        tset = _set()
+        tset.layers["magenta"] = dataclasses.replace(tset.layers["magenta"], scale=0.995)
+        out = tset.save(tmp_path / "set.json")
+        assert TricolourSet.load(out).layers["magenta"].scale == 0.995

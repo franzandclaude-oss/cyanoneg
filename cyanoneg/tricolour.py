@@ -12,6 +12,7 @@ them.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,18 @@ SOURCE_CHANNEL = {"cyan": "red", "magenta": "green", "yellow": "blue"}
 #: magenta and yellow layers depend on destroys Prussian blue; printing cyan earlier
 #: would erase it. Not configurable — a set that reorders this is not a valid set.
 PRINT_ORDER = ("magenta", "yellow", "cyan")
+
+#: The channel each layer's wedge must be *measured* through — its own complement.
+#:
+#: Not the same question as :data:`CHANNEL_INDEX`, which says where a layer's image comes
+#: from. ``analyze_wedge`` normalises on L*, which is right for Prussian blue on white and
+#: wrong for yellow, where L* barely moves across the whole density range: the curve would
+#: come out of noise and look like a measurement.
+RESPONSE_QUANTITY = {"cyan": "lstar_r", "magenta": "lstar_g", "yellow": "lstar_b"}
+
+#: Bounds on a layer's ``scale``. Cotton rag moves 0.5-1% across a wet/dry cycle, so a
+#: value outside this band is a typo or a units error rather than a shrinkage measurement.
+SCALE_BOUNDS = (0.95, 1.05)
 
 
 class TricolourSetError(ValueError):
@@ -102,6 +115,14 @@ class TricolourLayer:
     exposure_multiplier: float
     sensitizer: str = ""
     chemistry: str = ""
+    #: Linear scale applied to this layer's *picture block only*, to meet paper that has
+    #: already shrunk. 1.0 for print #1, which is the print that measures the real figure.
+    #:
+    #: The wedges and the control region are deliberately left unscaled: each is sampled
+    #: through a homography built from its own four fiducials, which absorbs a uniform
+    #: scale change for free. Shrinkage threatens registration of the picture and nothing
+    #: else.
+    scale: float = 1.0
 
 
 @dataclass
@@ -141,6 +162,13 @@ class TricolourSet:
             m = layer.exposure_multiplier
             if not isinstance(m, (int, float)) or m <= 0:
                 problems.append(f"{role} exposure_multiplier must be positive, got {m!r}")
+            s = layer.scale
+            lo, hi = SCALE_BOUNDS
+            if not isinstance(s, (int, float)) or not (lo <= s <= hi):
+                problems.append(
+                    f"{role} scale must lie within {SCALE_BOUNDS} — paper moves 0.5-1%, so "
+                    f"{s!r} is a mistake rather than a measurement"
+                )
         return problems
 
     def resolve(self, profile_dir: str | Path = PROFILE_DIR) -> dict[str, Profile]:
@@ -196,6 +224,7 @@ class TricolourSet:
                     "exposure_multiplier": layer.exposure_multiplier,
                     "sensitizer": layer.sensitizer,
                     "chemistry": layer.chemistry,
+                    "scale": layer.scale,
                 }
                 for role, layer in self.layers.items()
             },
@@ -213,6 +242,7 @@ class TricolourSet:
                     exposure_multiplier=ld["exposure_multiplier"],
                     sensitizer=ld.get("sensitizer", ""),
                     chemistry=ld.get("chemistry", ""),
+                    scale=ld.get("scale", 1.0),
                 )
             return cls(
                 name=d["name"],
@@ -266,6 +296,53 @@ def _check_derived(role: str, layer: dict[str, Any]) -> None:
             f"{role} layer claims print_order {order!r}, but the print order is "
             f"{PRINT_ORDER} so {role} is number {expected}"
         )
+
+
+def format_seconds(seconds: int) -> str:
+    """Whole seconds as ``mm:ss`` — the units the darkroom timer is actually set in.
+
+    ``HANDOFF.md`` records the measured SPE as "13:30 = 810 s". Emitting only the seconds
+    would leave that conversion to be done by hand, at the one moment it is most expensive
+    to get wrong.
+    """
+    return f"{seconds // 60:02d}:{seconds % 60:02d}"
+
+
+def layer_exposure(profile: Profile, layer: TricolourLayer) -> dict[str, Any]:
+    """One layer's working exposure. The only place a multiplier is ever applied.
+
+    Exposure has exactly one owner per value. The measured ``spe_seconds`` lives in the
+    layer's profile and is identical across all three, because it is a property of paper,
+    lamp and distance rather than of the layer — ``MUST_AGREE`` enforces that structurally,
+    since ``exposure`` is not on the exemption list. The multiplier lives in the set. The
+    product exists only here and in the manifest, so there is no second copy to disagree
+    with the first, and no way for a later refactor to apply the multiplier twice.
+
+    ``computed_seconds`` is rounded to 0.1 s purely to keep float noise out of an artefact
+    a person reads and diffs: 810 x 1.1 is 891.0000000000001 in float64.
+    """
+    try:
+        base = profile.exposure["spe_seconds"]
+    except (KeyError, TypeError) as e:
+        raise TricolourSetError(
+            f"profile {profile.name!r} records no spe_seconds, so its working exposure "
+            "cannot be computed — measure the standard printing exposure first"
+        ) from e
+    if not isinstance(base, (int, float)) or base <= 0:
+        raise TricolourSetError(
+            f"profile {profile.name!r} has a nonsensical spe_seconds {base!r}"
+        )
+
+    multiplier = layer.exposure_multiplier
+    computed = base * multiplier
+    instruction = math.floor(computed + 0.5)
+    return {
+        "base_spe_seconds": base,
+        "exposure_multiplier": multiplier,
+        "computed_seconds": round(computed, 1),
+        "instruction_seconds": instruction,
+        "instruction_display": format_seconds(instruction),
+    }
 
 
 def step_saturate(image: Image, amount: float) -> tuple[Image, float]:
