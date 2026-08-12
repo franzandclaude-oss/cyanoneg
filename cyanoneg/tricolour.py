@@ -1066,6 +1066,13 @@ def darkroom_sheet(manifest: dict[str, Any]) -> str:
         "The carbonate bleach used by magenta and yellow destroys Prussian blue.",
         "Cyan is last. Always.",
         "",
+        "## DO NOT SKIP A SCAN",
+        "",
+        "Each layer's wedge is scanned after that layer dries and before the next is",
+        "coated. Those scans are the measurement this whole print exists to produce.",
+        "Whether a wedge can still be read after cyan is what this print is testing,",
+        "so it cannot be relied on — a missed scan costs a full three-session cycle.",
+        "",
     ]
     for role in PRINT_ORDER:
         layer = manifest["layers"][role]
@@ -1077,16 +1084,39 @@ def darkroom_sheet(manifest: dict[str, Any]) -> str:
             f" = {e['base_spe_seconds']} s SPE x {e['exposure_multiplier']})",
             f"- Sensitizer: {layer['sensitizer'] or '—'}",
             f"- Then: {layer['chemistry'] or '—'}",
-            "- Scan this layer's wedge slot before coating the next layer.",
-            "  <!-- scan protocol pending B2: see the revisions document -->",
+            "- Dry flat (cold air only — heat warps the dimensional scale).",
+            f"- **SCAN the {role} wedge slot now**"
+            + (
+                "." if role == PRINT_ORDER[-1]
+                else ", before coating the next layer."
+            ),
+            "  SilverFast raw, converted in Photoshop — the same path as the existing",
+            "  calibration sheets, or the comparison means nothing.",
             "",
         ]
     out += [
-        "## After cyan",
+        "## After cyan — the experiment",
         "",
-        "- Scan all three wedge slots and the blocked control region.",
+        "- Scan all three wedge slots **and** the blocked control region.",
         "- Read the control in **all three channels** — a stain invisible in L* can be",
         "  large in blue, which is the layer most at risk.",
+        "",
+        "The curves come from the scans taken between layers, not from these. These",
+        "answer a different question: comparing them against the earlier scans, for the",
+        "same physical patches, shows whether an isolated wedge survives the full",
+        "remaining process. The control gives the stain floor that makes that readable —",
+        "if a wedge shifted by about what the control shifted, the shift is stain rather",
+        "than damage.",
+        "",
+        "If they do survive, later prints can drop the intermediate scans. That is a",
+        "conclusion to earn from this print, not one to assume before it.",
+        "",
+        "## Measure the fiducial span",
+        "",
+        "While the sheet is on the scanner, measure the printed picture fiducials against",
+        "their nominal spacing. That difference is the paper's shrinkage, and it is the",
+        "number that fills each layer's `scale` field for print #2. Nothing else measures",
+        "it, and it cannot be recovered later.",
         "",
     ]
     if manifest["warnings"]:

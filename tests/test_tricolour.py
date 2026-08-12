@@ -994,3 +994,30 @@ class TestDarkroomSheet:
         sheet = (tmp_path / "out" / "T_tricolour.md").read_text(encoding="utf-8")
         assert "37:08" in sheet and "2228 s" in sheet
         assert "all three channels" in sheet  # the control region instruction
+
+    def test_scan_protocol_is_stated_not_deferred(self, tmp_path):
+        """B2 is settled: the between-layer scans are the production measurement.
+
+        The sheet carried a pending-B2 marker while the question was open, on the grounds
+        that a wall sheet quietly stating the wrong protocol is worse than one with a
+        visible gap. That marker must now be gone, and the instruction real.
+        """
+        tset, pdir = _seeded(tmp_path)
+        make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="B2", profile_dir=pdir, wedges=False,
+        )
+        sheet = (tmp_path / "out" / "B2_tricolour.md").read_text(encoding="utf-8")
+
+        assert "pending B2" not in sheet
+        assert "<!--" not in sheet, "no unresolved markers left on a darkroom sheet"
+        assert "DO NOT SKIP A SCAN" in sheet
+        for role in PRINT_ORDER:
+            assert f"SCAN the {role} wedge slot now" in sheet
+        # Cyan is last; there is no layer after it to coat.
+        assert "SCAN the cyan wedge slot now, before coating" not in sheet
+        assert sheet.count(", before coating the next layer.") == 2
+        # The post-cyan scan is the experiment, not the measurement.
+        assert "come from the scans taken between layers" in sheet
+        # P2's number has exactly one chance to be taken.
+        assert "fiducial span" in sheet.lower()
