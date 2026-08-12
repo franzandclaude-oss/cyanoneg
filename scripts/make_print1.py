@@ -53,6 +53,16 @@ from cyanoneg.tricolour import (  # noqa: E402
 #: fixes that. Pre-shrink the sheets and keep print #1 small.
 PRINT_SIZE = PrintSize(130.0, 100.0)
 
+#: The transparency stock, measured — not A4.
+#:
+#: This has to match the film, not the paper. A page composed at A4 and printed onto a
+#: 278 mm sheet is either cropped by 19 mm or scaled to fit, and scaling is the worse
+#: outcome by far: it silently changes the print size the profile was calibrated for, so
+#: every exposure on the wall sheet becomes wrong for the negative that was actually made.
+#: The layout needs 190 x 243 mm, which leaves 26 x 35 mm here — still comfortable after
+#: a non-borderless printer takes its own margins off.
+FILM_MM = (216.0, 278.0)
+
 BASE_PROFILE = "CassArt 300 Sm"
 SET_NAME = "CassArt 300 Sm — Tricolour"
 SET_FILE = PROFILE_DIR / "CassArt 300 Sm — Tricolour.json"
@@ -83,7 +93,10 @@ def cmd_make(args: argparse.Namespace) -> int:
         output_dir=args.out,
         stem=args.stem or Path(args.source).stem,
         wedges=not args.no_wedges,
+        page_mm=FILM_MM,
     )
+    print(f"  film {FILM_MM[0]:.0f} x {FILM_MM[1]:.0f} mm — print at 100%, no scaling")
+    print()
 
     for role in PRINT_ORDER:
         layer = result.manifest["layers"][role]

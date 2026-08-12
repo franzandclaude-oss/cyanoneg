@@ -1,7 +1,7 @@
 # TRICOLOUR — CassArt 300 Sm — Tricolour
 
 Negatives: `TRESS_1M` · `_2Y` · `_3C`
-Sheet: 210 x 297 mm · picture 130 x 100 mm · pre-shrink the paper
+Sheet: 216 x 278 mm · picture 130 x 100 mm · pre-shrink the paper
 
 ## ORDER IS NOT NEGOTIABLE
 

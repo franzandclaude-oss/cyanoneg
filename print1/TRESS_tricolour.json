@@ -55,12 +55,12 @@
     ],
     "auto_orient": true,
     "page_mm": [
-      210.0,
-      297.0
+      216.0,
+      278.0
     ],
     "page_pixels": [
-      2976,
-      4209
+      3061,
+      3940
     ],
     "flipped_for_film": true
   },
@@ -79,21 +79,21 @@
   },
   "placement": {
     "picture": {
-      "x_px": 424,
-      "y_px": 381,
+      "x_px": 467,
+      "y_px": 246,
       "w_px": 2127,
       "h_px": 1606,
-      "x_mm": 29.9,
-      "y_mm": 26.9,
+      "x_mm": 32.9,
+      "y_mm": 17.4,
       "scale": 1.0
     },
     "control": {
-      "x_px": 1205,
-      "y_px": 3262,
+      "x_px": 1247,
+      "y_px": 3127,
       "w_px": 566,
       "h_px": 566,
-      "x_mm": 85.0,
-      "y_mm": 230.2,
+      "x_mm": 88.0,
+      "y_mm": 220.6,
       "fiducials": {
         "top_left": {
           "y_px": 28,
@@ -125,30 +125,30 @@
     "note": "identical on all three sheets; each layer's own slot is under layers.<role>",
     "wedges": {
       "magenta": {
-        "x_px": 142,
-        "y_px": 2270,
+        "x_px": 184,
+        "y_px": 2135,
         "w_px": 850,
         "h_px": 850,
-        "x_mm": 10.0,
-        "y_mm": 160.2,
+        "x_mm": 13.0,
+        "y_mm": 150.6,
         "sidecar": "wedge_magenta.json"
       },
       "yellow": {
-        "x_px": 1063,
-        "y_px": 2270,
+        "x_px": 1105,
+        "y_px": 2135,
         "w_px": 850,
         "h_px": 850,
-        "x_mm": 75.0,
-        "y_mm": 160.2,
+        "x_mm": 78.0,
+        "y_mm": 150.6,
         "sidecar": "wedge_yellow.json"
       },
       "cyan": {
-        "x_px": 1984,
-        "y_px": 2270,
+        "x_px": 2026,
+        "y_px": 2135,
         "w_px": 850,
         "h_px": 850,
-        "x_mm": 140.0,
-        "y_mm": 160.2,
+        "x_mm": 142.9,
+        "y_mm": 150.6,
         "sidecar": "wedge_cyan.json"
       }
     }
@@ -156,12 +156,12 @@
   "layers": {
     "magenta": {
       "wedge_slot": {
-        "x_px": 142,
-        "y_px": 2270,
+        "x_px": 184,
+        "y_px": 2135,
         "w_px": 850,
         "h_px": 850,
-        "x_mm": 10.0,
-        "y_mm": 160.2,
+        "x_mm": 13.0,
+        "y_mm": 150.6,
         "owned": true,
         "sidecar": "wedge_magenta.json"
       },
@@ -182,12 +182,12 @@
       "profile": {
         "name": "CassArt 300 Sm \u2014 Magenta",
         "provisional": true,
-        "calibration_fingerprint": "7a2d2988e8307534",
+        "calibration_fingerprint": "97152b9b050ab8cc",
         "calibration_identity": {
           "paper": "CassArt 300 Sm",
           "printer": "Epson ET-1810",
           "media_type": "Photo Paper Glossy",
-          "film": "Film Generic",
+          "film": "Film Generic 216x278",
           "film_batch": "Batch One",
           "working_space": "srgb",
           "driver_settings": {
@@ -527,12 +527,12 @@
     },
     "yellow": {
       "wedge_slot": {
-        "x_px": 1063,
-        "y_px": 2270,
+        "x_px": 1105,
+        "y_px": 2135,
         "w_px": 850,
         "h_px": 850,
-        "x_mm": 75.0,
-        "y_mm": 160.2,
+        "x_mm": 78.0,
+        "y_mm": 150.6,
         "owned": true,
         "sidecar": "wedge_yellow.json"
       },
@@ -553,12 +553,12 @@
       "profile": {
         "name": "CassArt 300 Sm \u2014 Yellow",
         "provisional": true,
-        "calibration_fingerprint": "7a2d2988e8307534",
+        "calibration_fingerprint": "97152b9b050ab8cc",
         "calibration_identity": {
           "paper": "CassArt 300 Sm",
           "printer": "Epson ET-1810",
           "media_type": "Photo Paper Glossy",
-          "film": "Film Generic",
+          "film": "Film Generic 216x278",
           "film_batch": "Batch One",
           "working_space": "srgb",
           "driver_settings": {
@@ -898,12 +898,12 @@
     },
     "cyan": {
       "wedge_slot": {
-        "x_px": 1984,
-        "y_px": 2270,
+        "x_px": 2026,
+        "y_px": 2135,
         "w_px": 850,
         "h_px": 850,
-        "x_mm": 140.0,
-        "y_mm": 160.2,
+        "x_mm": 142.9,
+        "y_mm": 150.6,
         "owned": true,
         "sidecar": "wedge_cyan.json"
       },
@@ -924,12 +924,12 @@
       "profile": {
         "name": "CassArt 300 Sm \u2014 Cyan",
         "provisional": true,
-        "calibration_fingerprint": "7a2d2988e8307534",
+        "calibration_fingerprint": "97152b9b050ab8cc",
         "calibration_identity": {
           "paper": "CassArt 300 Sm",
           "printer": "Epson ET-1810",
           "media_type": "Photo Paper Glossy",
-          "film": "Film Generic",
+          "film": "Film Generic 216x278",
           "film_batch": "Batch One",
           "working_space": "srgb",
           "driver_settings": {

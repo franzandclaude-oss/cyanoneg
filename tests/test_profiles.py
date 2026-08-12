@@ -158,9 +158,22 @@ class TestShippedProfiles:
         for value in (profile.paper, profile.film, profile.film_batch):
             assert value.strip(), "materials must be named"
         assert profile.paper == "CassArt 300 Sm"
-        assert profile.film == "Film Generic"
+        assert profile.film == "Film Generic 216x278"
         assert profile.film_batch == "Batch One"
         assert "Paper 1" not in profile.name, "the placeholder name must not survive"
+        assert profile.film not in ("Film 1", "Film Generic"), "too generic to re-buy"
+
+    def test_film_size_is_recorded_where_the_page_can_be_checked_against_it(self):
+        """The film is 216 x 278, not A4, and the negatives are composed to that.
+
+        A page composed at A4 and printed onto this stock is either cropped by 19 mm or
+        scaled to fit, and scaling silently changes the print size the profile was
+        calibrated for — every exposure would then be wrong for the negative that was
+        actually made. Recording the size in the film name is not decoration; it is the
+        only place the two can be compared.
+        """
+        profile = Profile.load(PROFILE_DIR / "CassArt 300 Sm.json")
+        assert "216x278" in profile.film.replace(" ", "")
 
     def test_cassart_is_measured_not_provisional(self):
         """The paper is calibrated: measured blocker, measured curve, provisional cleared.
