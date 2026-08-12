@@ -13,7 +13,10 @@ import numpy as np
 import pytest
 
 from cyanoneg.imageio import DEFAULT_SPACE, Image
-from cyanoneg.profiles import Profile
+from pathlib import Path
+
+from cyanoneg.pipeline import PrintSize
+from cyanoneg.profiles import PROFILE_DIR, Profile
 from cyanoneg.targets import PPI, _mm, step_wedge
 from cyanoneg.tricolour import (
     ALLOWED_TO_DIFFER,
@@ -23,10 +26,14 @@ from cyanoneg.tricolour import (
     MUST_AGREE,
     RESPONSE_QUANTITY,
     _glyph_stamp,
+    calibration_fingerprint,
     control_region,
     format_seconds,
     full_blocker_value,
     layer_exposure,
+    make_tricolour,
+    output_name,
+    seed_provisional_set,
     step_frame,
     tricolour_page,
     PRINT_ORDER,
@@ -685,3 +692,263 @@ class TestPageFit:
     def test_unknown_owner_is_refused(self):
         with pytest.raises(ValueError, match="unknown owner"):
             tricolour_page(_picture(), _wedges(), "green", BLOCKER_RGB, SATURATION)
+
+
+# --------------------------------------------------------------------------- run
+
+
+def _measured_base() -> Profile:
+    return Profile.load(PROFILE_DIR / "CassArt 300 Sm.json")
+
+
+def _seeded(tmp_path) -> tuple[TricolourSet, Path]:
+    """A provisional set on disk, seeded from the shipped measured profile."""
+    pdir = tmp_path / "profiles"
+    pdir.mkdir(exist_ok=True)
+    tset, clones = seed_provisional_set(_measured_base(), "CassArt 300 Sm — Tricolour")
+    for clone in clones:
+        clone.save(pdir / f"{clone.name}.json")
+    return tset, pdir
+
+
+def _independent_rgb(w: int = 400, h: int = 300) -> Image:
+    """Three channels that are genuinely independent.
+
+    Not gradients: a diagonal is a linear combination of a horizontal and a vertical one,
+    and an anti-correlated channel gives the *same* |correlation| as the channel it mirrors
+    — so a wrong permutation would score identically. Learned the hard way.
+    """
+    from PIL import Image as PILImage
+
+    def field(seed: int) -> np.ndarray:
+        small = np.random.default_rng(seed).random((15, 20)).astype(np.float32)
+        return np.asarray(
+            PILImage.fromarray(small, mode="F").resize((w, h), PILImage.Resampling.BICUBIC),
+            dtype=np.float32,
+        )
+
+    data = np.clip(np.stack([field(1), field(2), field(3)], axis=-1) * 0.8 + 0.1, 0.0, 1.0)
+    return Image(data, "srgb", ppi=300)
+
+
+class TestSeedProvisionalSet:
+    def test_clones_carry_the_measured_lut_unchanged(self, tmp_path):
+        """R1: nothing has measured how bleaching or toning reshapes this paper.
+
+        A shaping curve invented from a plausible shape would be indistinguishable in the
+        output from a measured one, while being fiction.
+        """
+        base = _measured_base()
+        _, clones = seed_provisional_set(base, "T")
+        assert len(clones) == 3
+        for clone in clones:
+            assert np.array_equal(clone.lut.values, base.lut.values)
+
+    def test_clones_are_provisional_and_carry_no_measurements(self):
+        _, clones = seed_provisional_set(_measured_base(), "T")
+        for clone in clones:
+            assert clone.provisional
+            assert clone.measurements["raw_patches"] == []
+
+    def test_spe_is_cloned_unmultiplied(self):
+        """B1: the multiplier lives in the set. A pre-multiplied profile applies it twice."""
+        _, clones = seed_provisional_set(_measured_base(), "T")
+        for clone in clones:
+            assert clone.exposure["spe_seconds"] == 810
+
+    def test_clones_keep_the_scan_path(self):
+        """F5: seeding is exactly where an undeclared field would have been lost."""
+        base = _measured_base()
+        _, clones = seed_provisional_set(base, "T")
+        for clone in clones:
+            assert clone.scan_settings == base.scan_settings
+            assert clone.scan_settings != {}
+
+    def test_seeded_layers_agree_with_each_other(self):
+        _, clones = seed_provisional_set(_measured_base(), "T")
+        by_role = dict(zip(PRINT_ORDER, clones))
+        assert check_profile_agreement(by_role) == []
+
+    def test_refuses_to_seed_from_a_provisional_profile(self):
+        base = dataclasses.replace(_measured_base(), provisional=True)
+        with pytest.raises(TricolourSetError, match="provisional"):
+            seed_provisional_set(base, "T")
+
+
+class TestOutputNaming:
+    def test_files_sort_into_printing_order(self):
+        names = sorted(output_name("IMG", role) for role in PRINT_ORDER)
+        assert names == ["IMG_1M", "IMG_2Y", "IMG_3C"]
+
+
+class TestMakeTricolour:
+    def test_writes_three_negatives_a_manifest_and_a_wall_sheet(self, tmp_path):
+        tset, pdir = _seeded(tmp_path)
+        result = make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100),
+            output_dir=tmp_path / "out", stem="P1", profile_dir=pdir, wedges=False,
+            page_mm=(210.0, 297.0),
+        )
+        assert sorted(p.name for p in result.paths.values()) == [
+            "P1_1M.tif", "P1_2Y.tif", "P1_3C.tif"
+        ]
+        assert (tmp_path / "out" / "P1_tricolour.json").exists()
+        assert (tmp_path / "out" / "P1_tricolour.md").exists()
+
+    def test_channel_mapping_is_verified_numerically(self, tmp_path):
+        """Plan §11.4 — the eyeball version of this passes on a wrong permutation.
+
+        Two things the plan's wording gets wrong, both found by running it:
+
+        The border must be excluded from the crop. It is a constant ~28% of the picture
+        block, and leaving it in drags every correlation towards zero uniformly, hiding
+        the difference being measured.
+
+        And the criterion is *highest*, not "far more strongly than the other two". A
+        natural photograph has RGB channels correlated at ~0.9 — HPTressII.jpg measures
+        0.77 to 0.90 — so a large margin is capped by the source rather than earned by the
+        separation, and demanding one fails every real image. A permutation error moves
+        which channel is the maximum, which is detectable regardless. The margin is
+        asserted here only because this synthetic source has independent channels; that is
+        what makes it a stronger test than any photograph can be.
+        """
+        from PIL import Image as PILImage
+        from cyanoneg.blocker import recover_coverage
+        from cyanoneg.imageio import load_image
+
+        source = _independent_rgb()
+        tset, pdir = _seeded(tmp_path)
+        result = make_tricolour(
+            source, tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="CHK", profile_dir=pdir, wedges=False,
+        )
+        rect = result.manifest["placement"]["picture"]
+        border = _mm(tset.border_mm)
+        blocker = _measured_base().blocker
+
+        for role in PRINT_ORDER:
+            film = load_image(result.paths[role])
+            print_view = film.data[:, ::-1]  # undo the film flip
+            block = print_view[
+                rect["y_px"] : rect["y_px"] + rect["h_px"],
+                rect["x_px"] : rect["x_px"] + rect["w_px"],
+            ]
+            cover = recover_coverage(block[border:-border, border:-border], blocker)
+            ch, cw = cover.shape
+            scores = []
+            for i in range(3):
+                plane = np.ascontiguousarray(source.data[..., i])
+                resized = np.asarray(
+                    PILImage.fromarray(plane, mode="F").resize(
+                        (cw, ch), PILImage.Resampling.BILINEAR
+                    ),
+                    dtype=np.float32,
+                )
+                scores.append(abs(np.corrcoef(cover.ravel(), resized.ravel())[0, 1]))
+
+            own = scores[CHANNEL_INDEX[role]]
+            others = sorted(scores)[:2]
+            assert own == max(scores), f"{role} does not track {SOURCE_CHANNEL[role]}"
+            assert own > 2.0 * max(others), (
+                f"{role} correlates {own:.2f} with {SOURCE_CHANNEL[role]} but "
+                f"{max(others):.2f} with another channel — too close to call"
+            )
+
+    def test_all_three_share_one_page_geometry(self, tmp_path):
+        """Different dimensions between layers would be misregistration by construction."""
+        from cyanoneg.imageio import load_image
+
+        tset, pdir = _seeded(tmp_path)
+        result = make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="G", profile_dir=pdir, wedges=False,
+        )
+        shapes = {load_image(p).data.shape for p in result.paths.values()}
+        assert len(shapes) == 1
+        assert len({json.dumps(f, sort_keys=True) for f in result.fiducials.values()}) == 1
+
+    def test_mono_source_is_refused(self, tmp_path):
+        tset, pdir = _seeded(tmp_path)
+        grey = _independent_rgb()
+        with pytest.raises(ValueError, match="mono"):
+            make_tricolour(
+                grey.replace(grey.data[..., 0]), tset, PrintSize(130, 100),
+                output_dir=tmp_path / "out", stem="M", profile_dir=pdir, wedges=False,
+            )
+
+    def test_provisional_layers_are_warned_about(self, tmp_path):
+        """A seeded set is an experiment, not a calibrated result. Say so."""
+        tset, pdir = _seeded(tmp_path)
+        result = make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="W", profile_dir=pdir, wedges=False,
+        )
+        assert any("provisional" in w for w in result.warnings)
+
+
+class TestManifest:
+    def test_records_exposure_computed_once(self, tmp_path):
+        tset, pdir = _seeded(tmp_path)
+        result = make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="E", profile_dir=pdir, wedges=False,
+        )
+        got = {
+            role: result.manifest["layers"][role]["exposure"]["instruction_display"]
+            for role in PRINT_ORDER
+        }
+        assert got == {"magenta": "20:15", "yellow": "37:08", "cyan": "14:51"}
+
+    def test_survives_the_named_profile_being_changed_afterwards(self, tmp_path):
+        """A6: a profile name does not preserve a run — the file can be overwritten.
+
+        The manifest must still identify the calibration that actually made the negatives.
+        """
+        tset, pdir = _seeded(tmp_path)
+        result = make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="R", profile_dir=pdir, wedges=False,
+        )
+        recorded = result.manifest["layers"]["magenta"]["profile"]
+        name = recorded["name"]
+
+        altered = dataclasses.replace(
+            Profile.load(pdir / f"{name}.json"), film_batch="a-different-box"
+        )
+        altered.save(pdir / f"{name}.json")
+
+        assert recorded["calibration_identity"]["film_batch"] == _measured_base().film_batch
+        assert calibration_fingerprint(altered) != recorded["calibration_fingerprint"]
+
+    def test_embeds_the_lut_that_ran(self, tmp_path):
+        tset, pdir = _seeded(tmp_path)
+        result = make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="L", profile_dir=pdir, wedges=False,
+        )
+        lut = result.manifest["layers"]["cyan"]["profile"]["lut"]
+        assert lut["size"] == _measured_base().lut.size
+        assert len(lut["values"]) == lut["size"]
+
+
+class TestDarkroomSheet:
+    def test_states_the_order_and_the_reason(self, tmp_path):
+        tset, pdir = _seeded(tmp_path)
+        result = make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="D", profile_dir=pdir, wedges=False,
+        )
+        sheet = (tmp_path / "out" / "D_tricolour.md").read_text(encoding="utf-8")
+        assert "ORDER IS NOT NEGOTIABLE" in sheet
+        assert "destroys Prussian blue" in sheet
+        assert sheet.index("1. MAGENTA") < sheet.index("2. YELLOW") < sheet.index("3. CYAN")
+
+    def test_gives_times_the_way_the_timer_is_set(self, tmp_path):
+        tset, pdir = _seeded(tmp_path)
+        make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="T", profile_dir=pdir, wedges=False,
+        )
+        sheet = (tmp_path / "out" / "T_tricolour.md").read_text(encoding="utf-8")
+        assert "37:08" in sheet and "2228 s" in sheet
+        assert "all three channels" in sheet  # the control region instruction

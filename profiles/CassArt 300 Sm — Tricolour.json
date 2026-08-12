@@ -1,0 +1,38 @@
+{
+  "name": "CassArt 300 Sm \u2014 Tricolour",
+  "saturation_boost": 1.35,
+  "border_mm": 10.0,
+  "registration": {
+    "fiducials": true,
+    "letter": true
+  },
+  "layers": {
+    "magenta": {
+      "print_order": 1,
+      "source_channel": "green",
+      "profile": "CassArt 300 Sm \u2014 Magenta",
+      "exposure_multiplier": 1.5,
+      "sensitizer": "10/10",
+      "chemistry": "expose \u2192 wash \u2192 sodium carbonate bleach \u2192 madder root tone",
+      "scale": 1.0
+    },
+    "yellow": {
+      "print_order": 2,
+      "source_channel": "blue",
+      "profile": "CassArt 300 Sm \u2014 Yellow",
+      "exposure_multiplier": 2.75,
+      "sensitizer": "10/10",
+      "chemistry": "heavy overexpose \u2192 wash \u2192 carbonate bleach to Fe(III) hydroxide",
+      "scale": 1.0
+    },
+    "cyan": {
+      "print_order": 3,
+      "source_channel": "red",
+      "profile": "CassArt 300 Sm \u2014 Cyan",
+      "exposure_multiplier": 1.1,
+      "sensitizer": "5/5 (1:1 dilute)",
+      "chemistry": "classic, untoned",
+      "scale": 1.0
+    }
+  }
+}

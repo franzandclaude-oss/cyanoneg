@@ -11,6 +11,8 @@ them.
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import json
 import math
 from dataclasses import dataclass, field, fields
@@ -20,11 +22,14 @@ from typing import Any
 import numpy as np
 from PIL import Image as PILImage
 
+from . import __version__
 from . import imageio as cio
+from . import pipeline
 from .blocker import apply_blocker
 from .imageio import Image
+from .pipeline import PrintSize
 from .profiles import PROFILE_DIR, Profile
-from .targets import A4_MM, PPI, Target, _font, _mm, apply_frame
+from .targets import A4_MM, PPI, Target, _font, _mm, apply_frame, step_wedge
 
 #: Rec.709 luma weights, the grey axis saturation is scaled about.
 _REC709 = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
@@ -76,6 +81,29 @@ ALLOWED_TO_DIFFER = frozenset(
 #: Everything else. These describe the shared apparatus and materials: if they differ, the
 #: layers were not calibrated for the same print and the set is a fiction.
 MUST_AGREE = tuple(f.name for f in fields(Profile) if f.name not in ALLOWED_TO_DIFFER)
+
+
+def shared_calibration_identity(profile: Profile) -> dict[str, Any]:
+    """The part of a profile that must be identical across the three layers.
+
+    Derived from :data:`MUST_AGREE`, so it is the same projection the agreement check uses
+    and cannot drift from it.
+    """
+    d = profile.to_dict()
+    return {name: d[name] for name in MUST_AGREE}
+
+
+def calibration_fingerprint(profile: Profile) -> str:
+    """A short stable digest of the apparatus a profile was measured on.
+
+    The manifest records a profile *name*, and a name does not preserve a run — the file
+    behind it can be recalibrated or overwritten the same afternoon. The fingerprint lets a
+    later reader tell whether the profile on disk is still the one that made the negatives.
+    """
+    payload = json.dumps(
+        shared_calibration_identity(profile), sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def check_profile_agreement(profiles: dict[str, Profile]) -> list[str]:
@@ -698,3 +726,337 @@ def tricolour_page(
             y += h + gaps[i]
 
     return Image(canvas, picture.space, ppi=PPI, bit_depth=picture.bit_depth), placement
+
+
+# --------------------------------------------------------------------------- run
+
+#: Fraction of clipped pixels above which the saturation boost is worth a warning.
+CLIP_WARN = 0.02
+
+
+@dataclass
+class TricolourResult:
+    """What one run produced, and everything needed to explain it later."""
+
+    paths: dict[str, Path]
+    manifest: dict[str, Any]
+    fiducials: dict[str, Any]
+    clipped_fraction: float
+    warnings: list[str] = field(default_factory=list)
+
+
+def output_name(stem: str, role: str) -> str:
+    """``<stem>_1M`` / ``_2Y`` / ``_3C`` — numbered so the files sort into printing order.
+
+    The order is the one thing about this process that cannot be recovered from the files
+    themselves, and getting it wrong destroys the print rather than degrading it.
+    """
+    return f"{stem}_{PRINT_ORDER.index(role) + 1}{role[0].upper()}"
+
+
+def make_tricolour(
+    source: str | Path | Image,
+    tset: TricolourSet,
+    print_size: PrintSize,
+    *,
+    output_dir: str | Path,
+    stem: str,
+    profile_dir: str | Path = PROFILE_DIR,
+    wedges: bool = True,
+    wedge_levels: int = 16,
+    wedge_redundancy: int = 4,
+    space: cio.Space | None = None,
+    raw_scan: bool = False,
+    output_ppi: float = PPI,
+    auto_orient: bool = True,
+    page_mm: tuple[float, float] = A4_MM,
+) -> TricolourResult:
+    """One RGB positive in, three registered negatives and a manifest out.
+
+    The step order is fixed by real dependencies, not preference: saturation is a
+    three-channel operation so it precedes the channel split; the frame writes into an
+    ``(h, w, 3)`` canvas so it follows the blocker; and framing and composition both
+    precede the flip, so the emitted geometry is in print orientation — which is the
+    orientation a scan is measured in.
+
+    Saturation is applied **once**, to the shared positive, before the split. Doing it per
+    layer would apply a three-channel operation to three separate monochrome planes, which
+    is not the same transform and not the one the sources describe.
+
+    The print size is resolved once and reused, so a portrait source cannot orient one
+    layer differently from another and quietly break registration.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    warnings: list[str] = []
+
+    problems = tset.validate()
+    if problems:
+        raise TricolourSetError("refusing to run an invalid set: " + "; ".join(problems))
+    profiles = tset.resolve(profile_dir)
+
+    image = source if isinstance(source, Image) else cio.load_image(source, space=space)
+    source_name = None if isinstance(source, Image) else str(source)
+    if raw_scan:
+        image = pipeline.step_invert(image)
+    if image.is_mono:
+        raise ValueError(
+            "a mono positive has no colour to separate — the three negatives would come "
+            "out identical and three darkroom sessions would produce a grey image"
+        )
+
+    src_w, src_h = image.size
+    boosted, clipped = step_saturate(image, tset.saturation_boost)
+    if clipped > CLIP_WARN:
+        warnings.append(
+            f"saturation boost {tset.saturation_boost} clipped {clipped:.1%} of pixels; "
+            "colour driven out of gamut here cannot be recovered by re-processing"
+        )
+
+    # Resolved once, then handed to all three layers.
+    oriented = print_size.oriented_for(src_w, src_h) if auto_orient else print_size
+
+    reference = profiles[PRINT_ORDER[0]]
+    blocker_rgb = tuple(reference.blocker["rgb"])
+    saturation = float(reference.blocker["saturation"])
+
+    wedge_targets = None
+    if wedges:
+        wedge_targets = {
+            role: step_wedge(
+                blocker_rgb,
+                saturation=saturation,
+                levels=wedge_levels,
+                redundancy=wedge_redundancy,
+            )
+            for role in PRINT_ORDER
+        }
+
+    border_px = _mm(tset.border_mm)
+    paths: dict[str, Path] = {}
+    layer_manifest: dict[str, Any] = {}
+    fiducials: dict[str, Any] = {}
+    placement: dict[str, Any] = {}
+
+    for role in PRINT_ORDER:
+        layer, profile = tset.layers[role], profiles[role]
+
+        plane = extract_channel(boosted, role)
+        plane = pipeline.step_apply_lut(plane, profile)
+        plane = pipeline.step_resize(plane, oriented, output_ppi, auto_orient=False)
+        plane = pipeline.step_invert(plane)
+        plane = pipeline.step_blocker(plane, profile)
+
+        framed, geometry = step_frame(
+            plane,
+            role,
+            border_px,
+            blocker_rgb,
+            saturation,
+            glyph=bool(tset.registration.get("letter", True)),
+        )
+        page, placement = tricolour_page(
+            framed,
+            wedge_targets,
+            role,
+            blocker_rgb,
+            saturation,
+            scale=layer.scale,
+            page_mm=page_mm,
+        )
+        film = pipeline.step_flip(page)
+
+        path = output_dir / f"{output_name(stem, role)}.tif"
+        cio.save_tiff(path, film)
+        paths[role] = path
+        fiducials[role] = geometry["fiducials"]
+
+        layer_manifest[role] = {
+            "print_order": PRINT_ORDER.index(role) + 1,
+            "source_channel": SOURCE_CHANNEL[role],
+            "response_quantity": RESPONSE_QUANTITY[role],
+            "negative": path.name,
+            "sensitizer": layer.sensitizer,
+            "chemistry": layer.chemistry,
+            "scale": layer.scale,
+            "exposure": layer_exposure(profile, layer),
+            "profile": {
+                "name": profile.name,
+                "provisional": profile.provisional,
+                "calibration_fingerprint": calibration_fingerprint(profile),
+                "calibration_identity": shared_calibration_identity(profile),
+                "lut": {
+                    "size": profile.lut.size,
+                    "values": [round(float(v), 9) for v in profile.lut.values],
+                },
+            },
+            "geometry": geometry,
+        }
+
+    provisional = [r for r in PRINT_ORDER if profiles[r].provisional]
+    if provisional:
+        warnings.append(
+            f"{', '.join(provisional)} still provisional — this print is the experiment "
+            "that measures them, not a calibrated result"
+        )
+
+    manifest = {
+        "generator": f"cyanoneg {__version__}",
+        "set": tset.to_dict(),
+        "source": {
+            "path": source_name,
+            "pixels": [src_w, src_h],
+            "raw_scan_inverted": raw_scan,
+        },
+        "output": {
+            "stem": stem,
+            "ppi": output_ppi,
+            "print_size_mm": [oriented.width_mm, oriented.height_mm],
+            "auto_orient": auto_orient,
+            "page_mm": list(page_mm),
+            "page_pixels": [int(page_mm[0] / 25.4 * PPI), int(page_mm[1] / 25.4 * PPI)],
+            "flipped_for_film": True,
+        },
+        "saturation": {
+            "boost": tset.saturation_boost,
+            "clipped_pixel_fraction": round(clipped, 6),
+            "warn_above": CLIP_WARN,
+        },
+        "blocker": {"rgb": list(blocker_rgb), "saturation": saturation},
+        "placement": placement,
+        "layers": layer_manifest,
+        "warnings": warnings,
+    }
+
+    (output_dir / f"{stem}_tricolour.json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
+    (output_dir / f"{stem}_tricolour.md").write_text(
+        darkroom_sheet(manifest), encoding="utf-8"
+    )
+
+    return TricolourResult(
+        paths=paths,
+        manifest=manifest,
+        fiducials=fiducials,
+        clipped_fraction=clipped,
+        warnings=warnings,
+    )
+
+
+#: What the sources specify per layer, in numbers. Everything else about a seeded set is
+#: cloned from the measured base profile rather than invented.
+PROVISIONAL_LAYERS = {
+    "magenta": {
+        "exposure_multiplier": 1.5,
+        "sensitizer": "10/10",
+        "chemistry": "expose → wash → sodium carbonate bleach → madder root tone",
+    },
+    "yellow": {
+        "exposure_multiplier": 2.75,
+        "sensitizer": "10/10",
+        "chemistry": "heavy overexpose → wash → carbonate bleach to Fe(III) hydroxide",
+    },
+    "cyan": {
+        "exposure_multiplier": 1.1,
+        "sensitizer": "5/5 (1:1 dilute)",
+        "chemistry": "classic, untoned",
+    },
+}
+
+
+def seed_provisional_set(
+    base: Profile, name: str, saturation_boost: float = 1.35
+) -> tuple[TricolourSet, list[Profile]]:
+    """Clone a measured profile into three provisional layer profiles, plus a set.
+
+    All three carry the base's **measured LUT, unchanged**. Nothing has measured how
+    bleaching or madder toning reshapes the scale on this paper, and a curve invented from
+    a plausible-looking shape would be worse than none: it would look authoritative while
+    being fiction. The measured curve is not a guess — it is the true response of this ink,
+    film, printer and paper through the exposure and wash, which the first two layers still
+    share up to the point of bleaching. It is a baseline, not a claim about what happens at
+    1.5x or 2.75x exposure; that is what print #1 is for.
+
+    What differentiates the layers on print #1 is therefore the exposure multiplier, which
+    is the one per-layer quantity the sources give numerically.
+
+    ``spe_seconds`` is cloned unmodified. The multiplier lives only in the set, so the
+    working exposure exists in exactly one place: the manifest.
+    """
+    if base.provisional:
+        raise TricolourSetError(
+            f"profile {base.name!r} is itself provisional — seed from a measured profile, "
+            "or the three layers inherit a curve nothing has verified"
+        )
+
+    profiles: list[Profile] = []
+    layers: dict[str, TricolourLayer] = {}
+    for role in PRINT_ORDER:
+        spec = PROVISIONAL_LAYERS[role]
+        clone = dataclasses.replace(
+            base,
+            name=f"{base.paper or base.name} — {role.capitalize()}",
+            chemistry=spec["chemistry"],
+            provisional=True,
+            measurements={"raw_patches": [], "scan_date": None},
+        )
+        profiles.append(clone)
+        layers[role] = TricolourLayer(
+            profile=clone.name,
+            exposure_multiplier=spec["exposure_multiplier"],
+            sensitizer=spec["sensitizer"],
+            chemistry=spec["chemistry"],
+        )
+
+    tset = TricolourSet(name=name, saturation_boost=saturation_boost, layers=layers)
+    return tset, profiles
+
+
+def darkroom_sheet(manifest: dict[str, Any]) -> str:
+    """The wall sheet: the same run, arranged for someone standing at the enlarger.
+
+    Deliberately a second artefact rather than a friendlier manifest. The JSON is
+    optimised for reproducing a run months later; this is optimised for not making a
+    mistake in the next ten minutes, and those pull in different directions.
+    """
+    out = [
+        f"# TRICOLOUR — {manifest['set']['name']}",
+        "",
+        f"Negatives: `{manifest['output']['stem']}_1M` · `_2Y` · `_3C`",
+        f"Sheet: {manifest['output']['page_mm'][0]:.0f} x "
+        f"{manifest['output']['page_mm'][1]:.0f} mm · picture "
+        f"{manifest['output']['print_size_mm'][0]:.0f} x "
+        f"{manifest['output']['print_size_mm'][1]:.0f} mm · pre-shrink the paper",
+        "",
+        "## ORDER IS NOT NEGOTIABLE",
+        "",
+        "The carbonate bleach used by magenta and yellow destroys Prussian blue.",
+        "Cyan is last. Always.",
+        "",
+    ]
+    for role in PRINT_ORDER:
+        layer = manifest["layers"][role]
+        e = layer["exposure"]
+        out += [
+            f"## {layer['print_order']}. {role.upper()} — `{layer['negative']}`",
+            "",
+            f"- **Expose {e['instruction_display']}**  ({e['instruction_seconds']} s"
+            f" = {e['base_spe_seconds']} s SPE x {e['exposure_multiplier']})",
+            f"- Sensitizer: {layer['sensitizer'] or '—'}",
+            f"- Then: {layer['chemistry'] or '—'}",
+            "- Scan this layer's wedge slot before coating the next layer.",
+            "  <!-- scan protocol pending B2: see the revisions document -->",
+            "",
+        ]
+    out += [
+        "## After cyan",
+        "",
+        "- Scan all three wedge slots and the blocked control region.",
+        "- Read the control in **all three channels** — a stain invisible in L* can be",
+        "  large in blue, which is the layer most at risk.",
+        "",
+    ]
+    if manifest["warnings"]:
+        out += ["## Warnings", ""] + [f"- {w}" for w in manifest["warnings"]] + [""]
+    return "\n".join(out)
