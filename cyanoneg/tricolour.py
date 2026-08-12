@@ -461,8 +461,14 @@ def step_frame(
 
     The glyph is drawn on its own sub-canvas, **mirrored**, and then pasted in. The page is
     composed in print orientation and flipped once on the way to film, so a letter drawn
-    the right way round here would come out reversed on the film — which is the side
-    actually read in a dim room.
+    the right way round here would come out reversed on the film.
+
+    Which side "correct" refers to is a real choice, confirmed rather than assumed: the
+    letter reads properly when the film is held up **ink-side towards you**, the way you
+    pick a sheet up to see which one it is. It therefore reads reversed when the film is
+    lying face-down in printing position — as does the picture, which is the entire point
+    of the flip. The glyph exists to stop three near-identical orange transparencies being
+    confused while being handled, so it is matched to handling, not to exposure.
 
     It is centred on the top border, between the two upper fiducials rather than beyond
     them. ``detect_fiducials`` takes the bounding box of all candidate centres and picks
@@ -618,7 +624,12 @@ def tricolour_page(
     scale: float = 1.0,
     page_mm: tuple[float, float] = A4_MM,
     picture_gap_mm: float = 20.0,
-    control_gap_mm: float = 5.0,
+    #: Wider than the 5 mm between wedge slots, and for a different reason. The wedge's
+    #: lower fiducials and the control's upper ones both sit ~2 mm inside their own
+    #: borders, so a 5 mm gap left only ~9 mm between two sets of detectable marks. The
+    #: manifest crops are exact, but a skewed scan has little room before one target's
+    #: furniture lands inside another's crop.
+    control_gap_mm: float = 10.0,
     slot_gap_mm: float = 5.0,
 ) -> tuple[Image, dict]:
     """Compose one layer's sheet, in print orientation.

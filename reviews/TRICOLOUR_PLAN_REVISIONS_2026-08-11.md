@@ -571,13 +571,36 @@ The third is what makes this cheap insurance rather than a nicety: it settles §
 
 ### Placement
 
-Centred below the wedge row, 5 mm gap. Block height becomes:
+Centred below the wedge row, **10 mm gap**. Block height at worst case:
 
 ```
-picture 120 + gap 20 + wedges 60 + gap 5 + control 40 = 245 mm
+picture 120 + gap 20 + wedges 60 + gap 10 + control 40 = 250 mm
 ```
 
-which leaves 26 mm top and bottom on A4's 297. The §4.6 horizontal layout is unchanged.
+leaving 23.5 mm top and bottom on A4's 297. The §4.6 horizontal layout is unchanged.
+
+**The gap is 10 mm, not the 5 mm used between wedge slots, and for a different reason.**
+The wedge's lower fiducials and the control's upper ones each sit ~2 mm inside their own
+borders, so a 5 mm gap left only ~9 mm between two sets of detectable marks. The manifest
+crops are exact, but a skewed scan has little room before one target's furniture lands
+inside another's crop. Found by composing a real sheet and looking at it.
+
+**250 mm is the worst case, not the figure to expect.** A real source fits *within* the
+print size rather than filling it: `HPTressII.jpg` at `PrintSize(130, 100)` composes to
+130 × 93.3 mm, giving a 243 mm block and 26.9 mm margins. The fit check uses actual
+dimensions, so nothing is at risk either way.
+
+### Glyph orientation — decided
+
+The C/M/Y letter reads correctly when the film is held up **ink-side towards you**, the
+way a sheet is picked up to see which one it is. It therefore reads reversed when the film
+lies face-down in printing position — as does the picture, which is the whole point of the
+flip. The glyph exists to stop three near-identical orange transparencies being confused
+while being *handled*, so it is matched to handling rather than to exposure. Confirmed by
+the operator; recorded here so it is not re-derived from first principles later.
+
+Verified visually on the composed film: `C` reads spine-left, opening-right. `M` and `Y`
+are symmetric and prove nothing, which is why `C` is the test.
 
 ### Acceptance
 

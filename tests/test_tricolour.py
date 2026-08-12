@@ -678,12 +678,30 @@ class TestPageScale:
 
 class TestPageFit:
     def test_settled_layout_fits_a4_with_room(self):
-        """picture 120 + gap 20 + wedges 60 + gap 5 + control 40 = 245 of 297."""
+        """picture 120 + gap 20 + wedges 60 + gap 10 + control 40 = 250 of 297.
+
+        This is the *worst* case: a picture that exactly fills its 100 mm box. A real
+        source fits within the print size rather than filling it, so the block is usually
+        shorter — HPTressII.jpg composes to 238 mm.
+        """
         _, place = tricolour_page(_picture(), _wedges(), "magenta", BLOCKER_RGB, SATURATION)
         top = place["picture"]["y_px"]
         bottom = place["control"]["y_px"] + place["control"]["h_px"]
-        assert round((bottom - top) / PPI * 25.4) == 245
-        assert top / PPI * 25.4 == pytest.approx(26, abs=1)
+        assert round((bottom - top) / PPI * 25.4) == 250
+        assert top / PPI * 25.4 == pytest.approx(23.5, abs=1)
+
+    def test_control_furniture_clears_the_wedge_furniture(self):
+        """Two targets' fiducials must not sit close enough to fall inside one crop.
+
+        The manifest crops are exact, but a skewed scan needs margin. Both sets sit ~2 mm
+        inside their own borders, so the clearance is the gap plus ~4 mm.
+        """
+        _, place = tricolour_page(_picture(), _wedges(), "magenta", BLOCKER_RGB, SATURATION)
+        wedge = place["wedges"]["magenta"]
+        gap_mm = (
+            place["control"]["y_px"] - (wedge["y_px"] + wedge["h_px"])
+        ) / PPI * 25.4
+        assert gap_mm == pytest.approx(10.0, abs=0.2)
 
     def test_oversized_picture_raises_rather_than_crops(self):
         with pytest.raises(ValueError, match="but the page is"):
