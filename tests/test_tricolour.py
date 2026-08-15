@@ -15,6 +15,7 @@ import pytest
 from cyanoneg.imageio import DEFAULT_SPACE, Image
 from pathlib import Path
 
+from cyanoneg import pipeline
 from cyanoneg.pipeline import PrintSize
 from cyanoneg.profiles import PROFILE_DIR, Profile
 from cyanoneg.targets import PPI, _mm, step_wedge
@@ -24,6 +25,10 @@ from cyanoneg.tricolour import (
     CLEAR_FILM,
     CONTROL_BORDER_MM,
     CONTROL_MM,
+    FILM_FRAME,
+    PRINT_FRAME,
+    film_rect,
+    to_print_orientation,
     MUST_AGREE,
     RESPONSE_QUANTITY,
     _glyph_stamp,
@@ -563,6 +568,92 @@ class TestPageBackground:
         page, _ = tricolour_page(_picture(), _wedges(), "cyan", BLOCKER_RGB, SATURATION)
         h, w = page.data.shape[:2]
         assert (round(w / PPI * 25.4), round(h / PPI * 25.4)) == (210, 297)
+
+
+class TestOrientationFrames:
+    """``placement`` is print orientation; the TIFFs are mirrored. Crossing the two is
+    the quietest mistake in this module — on a centred layout a rectangle cropped in the
+    wrong frame lands within a millimetre of the right place and looks entirely correct."""
+
+    def test_mirroring_twice_is_identity(self):
+        page, placement = tricolour_page(
+            _picture(), _wedges(), "magenta", BLOCKER_RGB, SATURATION
+        )
+        w = page.data.shape[1]
+        rect = placement["picture"]
+        there = film_rect(rect, w)
+        back = film_rect(there, w)
+        assert back["x_px"] == rect["x_px"]
+        assert (back["w_px"], back["h_px"], back["y_px"]) == (
+            rect["w_px"], rect["h_px"], rect["y_px"]
+        )
+
+    def test_only_x_moves(self):
+        """y, w and h are identical in both frames, which is why the error hides."""
+        page, placement = tricolour_page(
+            _picture(), _wedges(), "cyan", BLOCKER_RGB, SATURATION
+        )
+        rect = placement["control"]
+        moved = film_rect(rect, page.data.shape[1])
+        assert moved["y_px"] == rect["y_px"]
+        assert (moved["w_px"], moved["h_px"]) == (rect["w_px"], rect["h_px"])
+        assert moved["frame"] == FILM_FRAME
+
+    def test_the_rectangle_actually_finds_the_element_on_film(self):
+        """The property that matters: crop the exported film with the converted rectangle
+        and, once un-mirrored, get exactly what the same rectangle cuts from the page."""
+        page, placement = tricolour_page(
+            _picture(), _wedges(), "yellow", BLOCKER_RGB, SATURATION
+        )
+        film = pipeline.step_flip(page)
+        w = page.data.shape[1]
+
+        for rect in (placement["picture"], placement["control"],
+                     placement["wedges"]["yellow"]):
+            want = page.data[
+                rect["y_px"] : rect["y_px"] + rect["h_px"],
+                rect["x_px"] : rect["x_px"] + rect["w_px"],
+            ]
+            c = film_rect(rect, w)
+            got = to_print_orientation(
+                film.data[c["y_px"] : c["y_px"] + c["h_px"], c["x_px"] : c["x_px"] + c["w_px"]]
+            )
+            assert np.array_equal(got, want)
+
+    def test_cropping_in_the_wrong_frame_is_detectably_wrong(self):
+        """Guards the guard. If a mirrored crop happened to equal the print-frame crop,
+        every test above would pass while proving nothing — so assert the two differ."""
+        page, placement = tricolour_page(
+            _picture(), _wedges(), "magenta", BLOCKER_RGB, SATURATION
+        )
+        film = pipeline.step_flip(page)
+        rect = placement["wedges"]["magenta"]
+        naive = film.data[
+            rect["y_px"] : rect["y_px"] + rect["h_px"],
+            rect["x_px"] : rect["x_px"] + rect["w_px"],
+        ]
+        want = page.data[
+            rect["y_px"] : rect["y_px"] + rect["h_px"],
+            rect["x_px"] : rect["x_px"] + rect["w_px"],
+        ]
+        assert not np.array_equal(naive, want), (
+            "the wrong-frame crop matches the right one, so these tests prove nothing "
+            "about this layout"
+        )
+
+    def test_a_rectangle_that_cannot_fit_is_refused(self):
+        with pytest.raises(ValueError, match="does not fit"):
+            film_rect({"x_px": 900, "y_px": 0, "w_px": 200, "h_px": 10}, 1000)
+
+    def test_manifest_states_its_frame(self, tmp_path):
+        tset, pdir = _seeded(tmp_path)
+        result = make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="FR", profile_dir=pdir, wedges=False,
+        )
+        placement = result.manifest["placement"]
+        assert placement["frame"] == PRINT_FRAME
+        assert "film_rect" in placement["frame_note"]
 
 
 class TestBlockerExtent:

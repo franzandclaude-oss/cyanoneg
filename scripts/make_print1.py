@@ -44,8 +44,10 @@ from cyanoneg.tricolour import (  # noqa: E402
     PRINT_ORDER,
     SOURCE_CHANNEL,
     TricolourSet,
+    film_rect,
     make_tricolour,
     seed_provisional_set,
+    to_print_orientation,
 )
 
 #: 130 mm on the long edge is a paper constraint, not a layout one. Cotton rag grows
@@ -169,10 +171,17 @@ def cmd_check(args: argparse.Namespace) -> int:
     thin: list[str] = []
     for role in PRINT_ORDER:
         film = load_image(Path(args.out) / manifest["layers"][role]["negative"])
-        block = film.data[:, ::-1][
-            rect["y_px"] : rect["y_px"] + rect["h_px"],
-            rect["x_px"] : rect["x_px"] + rect["w_px"],
-        ]
+        # rect is print orientation; the file is mirrored. Move the rectangle rather than
+        # the 72 MB array — then un-mirror the crop, because locating the block correctly
+        # still leaves its contents left-right reversed, and the source it is about to be
+        # correlated against is not.
+        crop = film_rect(rect, manifest["output"]["page_pixels"][0])
+        block = to_print_orientation(
+            film.data[
+                crop["y_px"] : crop["y_px"] + crop["h_px"],
+                crop["x_px"] : crop["x_px"] + crop["w_px"],
+            ]
+        )
         # The border is a constant ~28% of the block; leaving it in drags every
         # correlation towards zero uniformly and hides the difference being measured.
         cover = recover_coverage(block[border:-border, border:-border], blocker)

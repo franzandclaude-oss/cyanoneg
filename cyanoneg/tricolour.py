@@ -617,6 +617,55 @@ def control_region(
 #: Film base: blocks nothing. What the page falls back to outside ``blocker_extent_mm``.
 CLEAR_FILM = 1.0
 
+#: The frame every ``placement`` rectangle is expressed in.
+#:
+#: Composition happens in print orientation and the flip comes last, so these coordinates
+#: match a flatbed scan of the finished cyanotype — the contact print un-mirrors the film.
+#: That is the frame the measurements are taken in, and it is the right default.
+PRINT_FRAME = "print"
+
+#: The frame the exported TIFFs are in: print orientation mirrored left-to-right.
+FILM_FRAME = "film"
+
+
+def film_rect(rect: dict[str, Any], page_w_px: int) -> dict[str, Any]:
+    """Mirror one ``placement`` rectangle from print orientation into film orientation.
+
+    Exists because the alternative is writing ``page_w - x - w`` by hand at each call site,
+    and getting that wrong is close to invisible here: the layout is centred, so a rectangle
+    cropped in the wrong frame lands within a millimetre of the right place and returns a
+    picture that looks entirely correct. It is off by a mirror, not by a mile.
+
+    Only ``x`` moves. The export flips horizontally, so ``y``, ``w`` and ``h`` are the same
+    in both frames — which is exactly why the mistake survives a casual look at the numbers.
+
+    Prefer this to un-mirroring the image: the rectangle is four integers and the film is a
+    72 MB array.
+
+    This locates the crop; it does not orient its contents. Pixels cut out with a mirrored
+    rectangle are still mirrored, so anything compared against the source positive — or
+    against a scan of the print — needs :func:`to_print_orientation` applied to the crop.
+    """
+    if not 0 <= rect["x_px"] <= page_w_px - rect["w_px"]:
+        raise ValueError(
+            f"rectangle at x={rect['x_px']} w={rect['w_px']} does not fit a "
+            f"{page_w_px}px page — mirroring it would put it off the sheet"
+        )
+    mirrored = dict(rect)
+    mirrored["x_px"] = int(page_w_px - rect["x_px"] - rect["w_px"])
+    mirrored["x_mm"] = round(mirrored["x_px"] / PPI * 25.4, 1)
+    mirrored["frame"] = FILM_FRAME
+    return mirrored
+
+
+def to_print_orientation(film: np.ndarray) -> np.ndarray:
+    """Un-mirror a film-orientation array so ``placement`` rectangles index it directly.
+
+    The named inverse of the export flip. Copies, so use :func:`film_rect` instead when the
+    array is large and only a crop is wanted.
+    """
+    return np.ascontiguousarray(film[:, ::-1])
+
 
 def tricolour_page(
     picture: Image,
@@ -1001,6 +1050,15 @@ def make_tricolour(
         "picture": shared["picture"],
         "control": shared["control"],
         "note": "identical on all three sheets; each layer's own slot is under layers.<role>",
+        # Stated rather than implied. Every rectangle below is pre-flip, which is what a
+        # scan of the finished print shows; the TIFFs are mirrored. Cropping a TIFF with
+        # these numbers is off by a mirror and, on a centred layout, looks correct.
+        "frame": PRINT_FRAME,
+        "frame_note": (
+            "print orientation (pre-flip) — matches a flatbed scan of the cyanotype. "
+            "The exported TIFFs are mirrored: convert with tricolour.film_rect(rect, "
+            "page_pixels[0]) before cropping film."
+        ),
     }
     if "blocker_region" in shared:
         page_geometry["blocker_region"] = shared["blocker_region"]
