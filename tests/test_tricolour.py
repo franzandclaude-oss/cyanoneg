@@ -21,6 +21,7 @@ from cyanoneg.targets import PPI, _mm, step_wedge
 from cyanoneg.tricolour import (
     ALLOWED_TO_DIFFER,
     CHANNEL_INDEX,
+    CLEAR_FILM,
     CONTROL_BORDER_MM,
     CONTROL_MM,
     MUST_AGREE,
@@ -564,6 +565,111 @@ class TestPageBackground:
         assert (round(w / PPI * 25.4), round(h / PPI * 25.4)) == (210, 297)
 
 
+class TestBlockerExtent:
+    """Bounding the flood trades ink for a promise that no coated paper lies outside it."""
+
+    EXTENT = 5.0
+
+    def _page(self, owner: str, extent):
+        return tricolour_page(
+            _picture(), _wedges(), owner, BLOCKER_RGB, SATURATION,
+            blocker_extent_mm=extent,
+        )
+
+    def test_default_floods_the_sheet_unchanged(self):
+        """``None`` must leave the page exactly as it was before this option existed."""
+        page, placement = self._page("magenta", None)
+        blocked = full_blocker_value(BLOCKER_RGB, SATURATION)
+        assert "blocker_region" not in placement
+        for corner in (page.data[0, 0], page.data[0, -1], page.data[-1, 0], page.data[-1, -1]):
+            assert np.allclose(corner, blocked)
+
+    def test_region_is_identical_on_all_three_sheets(self):
+        """The one mistake here that destroys a print rather than degrading it.
+
+        The bound is taken over every element, including the two wedge slots a sheet does
+        not own. Bounding to the owner's slot alone would save more ink and would leave
+        paper that is blocked under magenta sitting under clear film on yellow — a full
+        unfiltered 2228 s exposure straight onto a coated sheet, which is precisely what
+        the blocked background exists to prevent. Compared as pixels, not just as records,
+        because the records agreeing would not prove the canvases do.
+
+        Comparing "every clear-film pixel" across the three sheets is the obvious check
+        and it is wrong: a wedge's own fiducials and its n = 0 patch are clear film too,
+        and by R2 they appear only on the sheet that owns that slot. The three masks
+        therefore differ *inside* the slots by design. What has to match is the film
+        outside the blocked region, which is what bounding actually creates.
+        """
+        pages, regions = {}, {}
+        for role in PRINT_ORDER:
+            page, placement = self._page(role, self.EXTENT)
+            pages[role] = page.data
+            regions[role] = placement["blocker_region"]
+
+        first = regions[PRINT_ORDER[0]]
+        for role in PRINT_ORDER[1:]:
+            assert regions[role] == first, f"{role} bounded the blocker differently"
+
+        h, w = pages[PRINT_ORDER[0]].shape[:2]
+        outside = np.ones((h, w), dtype=bool)
+        outside[
+            first["y_px"] : first["y_px"] + first["h_px"],
+            first["x_px"] : first["x_px"] + first["w_px"],
+        ] = False
+        for role in PRINT_ORDER:
+            assert np.all(pages[role][outside] == CLEAR_FILM), (
+                f"{role} leaves blocker outside the shared region — the three sheets "
+                "would protect different paper"
+            )
+
+    def test_nothing_inside_the_region_changes(self):
+        """Bounding may only remove background. Everything inside must be byte-identical."""
+        flooded, _ = self._page("yellow", None)
+        bounded, placement = self._page("yellow", self.EXTENT)
+        r = placement["blocker_region"]
+        sl = (slice(r["y_px"], r["y_px"] + r["h_px"]), slice(r["x_px"], r["x_px"] + r["w_px"]))
+        assert np.array_equal(bounded.data[sl], flooded.data[sl])
+
+    def test_outside_is_clear_film_and_the_elements_are_not(self):
+        page, placement = self._page("cyan", self.EXTENT)
+        r = placement["blocker_region"]
+        assert np.allclose(page.data[0, 0], CLEAR_FILM)
+        assert np.allclose(page.data[-1, -1], CLEAR_FILM)
+        for name in ("picture", "control"):
+            e = placement[name]
+            assert e["x_px"] >= r["x_px"] and e["y_px"] >= r["y_px"]
+            assert e["x_px"] + e["w_px"] <= r["x_px"] + r["w_px"]
+            assert e["y_px"] + e["h_px"] <= r["y_px"] + r["h_px"]
+        for slot in placement["wedges"].values():
+            assert slot["x_px"] >= r["x_px"]
+            assert slot["x_px"] + slot["w_px"] <= r["x_px"] + r["w_px"]
+
+    def test_zero_extent_still_encloses_every_element(self):
+        """The boundary case: no margin at all must still not clip an element."""
+        _, placement = self._page("magenta", 0.0)
+        r = placement["blocker_region"]
+        for slot in placement["wedges"].values():
+            assert slot["x_px"] >= r["x_px"]
+            assert slot["x_px"] + slot["w_px"] <= r["x_px"] + r["w_px"]
+
+    def test_extent_larger_than_the_page_is_the_flood_again(self):
+        page, placement = self._page("magenta", 500.0)
+        blocked = full_blocker_value(BLOCKER_RGB, SATURATION)
+        assert placement["blocker_region"]["cleared_fraction"] == 0.0
+        assert np.allclose(page.data[0, 0], blocked)
+
+    def test_negative_extent_refused(self):
+        with pytest.raises(ValueError, match="blocker_extent_mm must be >= 0"):
+            self._page("magenta", -1.0)
+
+    def test_centred_is_measured_not_assumed(self):
+        """The wall sheet says "centred on the sheet"; that has to be true, not asserted."""
+        _, placement = self._page("magenta", self.EXTENT)
+        r = placement["blocker_region"]
+        assert r["centred"] is True
+        assert max(r["offset_from_centre_mm"]) < 0.5
+
+
 class TestWedgeIsolation:
     """R2: each layer's wedge measures that layer alone.
 
@@ -971,6 +1077,47 @@ class TestManifest:
         lut = result.manifest["layers"]["cyan"]["profile"]["lut"]
         assert lut["size"] == _measured_base().lut.size
         assert len(lut["values"]) == lut["size"]
+
+
+class TestBlockerExtentReaches_the_darkroom:
+    """A bound the printer honours but nobody reads is not a guard."""
+
+    def _run(self, tmp_path, extent, stem):
+        tset, pdir = _seeded(tmp_path)
+        return make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem=stem, profile_dir=pdir, blocker_extent_mm=extent,
+        )
+
+    def test_manifest_records_the_region_and_the_setting(self, tmp_path):
+        result = self._run(tmp_path, 5.0, "BE")
+        assert result.manifest["output"]["blocker_extent_mm"] == 5.0
+        region = result.manifest["placement"]["blocker_region"]
+        assert region["w_mm"] > 0 and region["h_mm"] > 0
+        assert 0.0 < region["cleared_fraction"] < 1.0
+
+    def test_the_coating_limit_is_on_the_wall_sheet(self, tmp_path):
+        """The number a person needs while holding a brush, not only in the JSON."""
+        self._run(tmp_path, 5.0, "BW")
+        sheet = (tmp_path / "out" / "BW_tricolour.md").read_text(encoding="utf-8")
+        assert "COAT INSIDE THE BLOCKER" in sheet
+        assert "Coat no larger than" in sheet
+        assert "clear film blocks" in sheet
+
+    def test_a_flooded_sheet_says_nothing_about_coating_limits(self, tmp_path):
+        """No bound, no guard to state — and no phantom limit to obey."""
+        result = self._run(tmp_path, None, "BF")
+        assert result.manifest["output"]["blocker_extent_mm"] is None
+        assert "blocker_region" not in result.manifest["placement"]
+        sheet = (tmp_path / "out" / "BF_tricolour.md").read_text(encoding="utf-8")
+        assert "COAT INSIDE THE BLOCKER" not in sheet
+
+    def test_bounding_raises_a_warning(self, tmp_path):
+        """It surfaces wherever warnings surface: script output and the wall sheet."""
+        result = self._run(tmp_path, 5.0, "BX")
+        assert any("unfiltered exposure" in w for w in result.warnings)
+        sheet = (tmp_path / "out" / "BX_tricolour.md").read_text(encoding="utf-8")
+        assert "unfiltered exposure" in sheet
 
 
 class TestDarkroomSheet:

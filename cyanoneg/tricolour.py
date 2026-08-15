@@ -614,6 +614,10 @@ def control_region(
     return apply_frame(interior, _mm(border_mm), tuple(float(v) for v in blocked))
 
 
+#: Film base: blocks nothing. What the page falls back to outside ``blocker_extent_mm``.
+CLEAR_FILM = 1.0
+
+
 def tricolour_page(
     picture: Image,
     wedges: dict[str, Target] | None,
@@ -623,6 +627,15 @@ def tricolour_page(
     *,
     scale: float = 1.0,
     page_mm: tuple[float, float] = A4_MM,
+    #: How far the blocker extends past the outermost element, in mm. ``None`` floods the
+    #: whole sheet, which is the safe default and what R3 asks for.
+    #:
+    #: A number trades ink for a promise: everything beyond that margin becomes clear film,
+    #: and clear film passes UV. The promise is that no *coated* paper lies out there. That
+    #: is why the region is recorded in the manifest and printed on the wall sheet as a
+    #: coating limit — the guard has to be somewhere a person will actually read it, not
+    #: only in the head of whoever chose the number.
+    blocker_extent_mm: float | None = None,
     picture_gap_mm: float = 20.0,
     #: Wider than the 5 mm between wedge slots, and for a different reason. The wedge's
     #: lower fiducials and the control's upper ones both sit ~2 mm inside their own
@@ -651,11 +664,23 @@ def tricolour_page(
     homographies built from their own fiducials, which absorb a uniform scale change for
     free, so shrinkage threatens registration of the picture and nothing else.
 
+    ``blocker_extent_mm`` bounds the flood. The bound is taken over **every** element
+    including the two wedge slots this sheet does not own, so all three sheets end up with
+    an identical blocked region. Deriving it from the owner's slot alone would save more
+    ink and would be a serious mistake: a strip blocked on magenta and clear on yellow
+    takes a full unfiltered 2228 s exposure through the second negative, which is the
+    precise failure the blocked background exists to prevent.
+
     Returns the page and a placement dict recording every croppable region in print
     orientation, which is the orientation a scan is measured in.
     """
     if owner not in PRINT_ORDER:
         raise ValueError(f"unknown owner {owner!r}; expected one of {PRINT_ORDER}")
+    if blocker_extent_mm is not None and blocker_extent_mm < 0:
+        raise ValueError(
+            f"blocker_extent_mm must be >= 0, got {blocker_extent_mm}; a negative margin "
+            "would clear film over the elements themselves"
+        )
     if wedges is not None and set(wedges) != set(PRINT_ORDER):
         raise ValueError(
             "wedges must cover every layer so all three sheets share one geometry; "
@@ -736,7 +761,63 @@ def tricolour_page(
         if i < len(gaps):
             y += h + gaps[i]
 
+    if blocker_extent_mm is not None:
+        placement["blocker_region"] = _bound_blocker(
+            canvas, placement, _mm(blocker_extent_mm), blocker_extent_mm, _record
+        )
+
     return Image(canvas, picture.space, ppi=PPI, bit_depth=picture.bit_depth), placement
+
+
+def _bound_blocker(
+    canvas: np.ndarray,
+    placement: dict[str, Any],
+    pad: int,
+    extent_mm: float,
+    record: Any,
+) -> dict[str, Any]:
+    """Clear the film outside ``pad`` pixels of the outermost element, in place.
+
+    Written as four edge slices rather than a mask because the four strips are provably
+    disjoint from every element rectangle: the region is the bounding box of those
+    rectangles, grown outwards. Nothing an element occupies can be cleared, whatever the
+    layout does next.
+    """
+    page_h, page_w = canvas.shape[:2]
+    rects = [placement["picture"], placement["control"], *placement.get("wedges", {}).values()]
+    x0 = max(0, min(r["x_px"] for r in rects) - pad)
+    y0 = max(0, min(r["y_px"] for r in rects) - pad)
+    x1 = min(page_w, max(r["x_px"] + r["w_px"] for r in rects) + pad)
+    y1 = min(page_h, max(r["y_px"] + r["h_px"] for r in rects) + pad)
+
+    canvas[:y0, :] = CLEAR_FILM
+    canvas[y1:, :] = CLEAR_FILM
+    canvas[y0:y1, :x0] = CLEAR_FILM
+    canvas[y0:y1, x1:] = CLEAR_FILM
+
+    cleared = 1.0 - ((x1 - x0) * (y1 - y0)) / float(page_w * page_h)
+    # Measured, not assumed. The wall sheet turns this into "coat W x H centred on the
+    # sheet", which is only a safe instruction if the region really is centred; the rows
+    # are centred individually, so it is, but a future layout change could break that
+    # silently and the sheet would keep giving the old instruction.
+    off_x = abs((x0 + x1) - page_w) / 2.0
+    off_y = abs((y0 + y1) - page_h) / 2.0
+    return record(
+        x0,
+        y0,
+        x1 - x0,
+        y1 - y0,
+        extent_mm=extent_mm,
+        w_mm=round((x1 - x0) / PPI * 25.4, 1),
+        h_mm=round((y1 - y0) / PPI * 25.4, 1),
+        cleared_fraction=round(cleared, 4),
+        offset_from_centre_mm=[round(off_x / PPI * 25.4, 2), round(off_y / PPI * 25.4, 2)],
+        centred=bool(max(off_x, off_y) <= _mm(0.5)),
+        note=(
+            "blocker inside this rectangle, clear film outside; identical on all three "
+            "sheets. Coated paper must stay inside it — clear film passes UV."
+        ),
+    )
 
 
 # --------------------------------------------------------------------------- run
@@ -781,6 +862,7 @@ def make_tricolour(
     output_ppi: float = PPI,
     auto_orient: bool = True,
     page_mm: tuple[float, float] = A4_MM,
+    blocker_extent_mm: float | None = None,
 ) -> TricolourResult:
     """One RGB positive in, three registered negatives and a manifest out.
 
@@ -874,6 +956,7 @@ def make_tricolour(
             saturation,
             scale=layer.scale,
             page_mm=page_mm,
+            blocker_extent_mm=blocker_extent_mm,
         )
         film = pipeline.step_flip(page)
 
@@ -919,6 +1002,14 @@ def make_tricolour(
         "control": shared["control"],
         "note": "identical on all three sheets; each layer's own slot is under layers.<role>",
     }
+    if "blocker_region" in shared:
+        page_geometry["blocker_region"] = shared["blocker_region"]
+        region = shared["blocker_region"]
+        warnings.append(
+            f"blocker bounded to {region['w_mm']:.0f} x {region['h_mm']:.0f} mm "
+            f"({region['cleared_fraction']:.0%} of the sheet is clear film) — coated paper "
+            "outside that rectangle takes an unfiltered exposure on all three layers"
+        )
     if "wedges" in shared:
         page_geometry["wedges"] = {
             role: {k: v for k, v in slot.items() if k != "owned"}
@@ -948,6 +1039,7 @@ def make_tricolour(
             "page_mm": list(page_mm),
             "page_pixels": [int(page_mm[0] / 25.4 * PPI), int(page_mm[1] / 25.4 * PPI)],
             "flipped_for_film": True,
+            "blocker_extent_mm": blocker_extent_mm,
         },
         "saturation": {
             "boost": tset.saturation_boost,
@@ -1066,6 +1158,27 @@ def darkroom_sheet(manifest: dict[str, Any]) -> str:
         "The carbonate bleach used by magenta and yellow destroys Prussian blue.",
         "Cyan is last. Always.",
         "",
+    ]
+    region = manifest["placement"].get("blocker_region")
+    if region:
+        where = (
+            "centred on the sheet"
+            if region["centred"]
+            else f"with its top-left corner at {region['x_mm']:.0f}, {region['y_mm']:.0f} mm"
+        )
+        out += [
+            "## COAT INSIDE THE BLOCKER",
+            "",
+            f"**Coat no larger than {region['w_mm']:.0f} x {region['h_mm']:.0f} mm, {where}.**",
+            "",
+            f"The blocker stops there. Outside it the film is clear "
+            f"({region['cleared_fraction']:.0%} of the sheet), and clear film blocks",
+            "nothing — sensitized paper reaching past that rectangle takes the full",
+            "exposure on all three layers and comes out solid. Unsensitized paper out",
+            "there is fine, which is the whole point: the ink was doing no work.",
+            "",
+        ]
+    out += [
         "## DO NOT SKIP A SCAN",
         "",
         "Each layer's wedge is scanned after that layer dries and before the next is",

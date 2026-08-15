@@ -94,8 +94,16 @@ def cmd_make(args: argparse.Namespace) -> int:
         stem=args.stem or Path(args.source).stem,
         wedges=not args.no_wedges,
         page_mm=FILM_MM,
+        blocker_extent_mm=args.blocker_extent,
     )
     print(f"  film {FILM_MM[0]:.0f} x {FILM_MM[1]:.0f} mm — print at 100%, no scaling")
+    region = result.manifest["placement"].get("blocker_region")
+    if region:
+        print(
+            f"  blocker bounded to {region['w_mm']:.0f} x {region['h_mm']:.0f} mm"
+            f" — {region['cleared_fraction']:.0%} of the sheet is clear film"
+        )
+        print(f"  COAT NO LARGER THAN {region['w_mm']:.0f} x {region['h_mm']:.0f} mm")
     print()
 
     for role in PRINT_ORDER:
@@ -228,6 +236,15 @@ def main(argv: list[str] | None = None) -> int:
     make.add_argument("--out", default="print1")
     make.add_argument("--stem", default=None)
     make.add_argument("--no-wedges", action="store_true")
+    make.add_argument(
+        "--blocker-extent",
+        type=float,
+        default=None,
+        metavar="MM",
+        help="bound the blocker to this margin past the outermost element and leave the "
+        "rest clear film. Saves ink at the sheet edges, where nothing is coated. Omit to "
+        "flood the whole sheet (the safe default). 5 is a sensible value.",
+    )
     make.set_defaults(func=cmd_make)
 
     check = sub.add_parser("check", help="numeric channel verification — run before coating")
