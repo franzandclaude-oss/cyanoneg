@@ -78,6 +78,17 @@
     ],
     "saturation": 1.0
   },
+  "wedge": {
+    "levels": 16,
+    "redundancy": 4,
+    "seed": 20260725,
+    "sidecars": {
+      "magenta": "wedge_magenta.json",
+      "yellow": "wedge_yellow.json",
+      "cyan": "wedge_cyan.json"
+    },
+    "note": "the sidecar maps each cell to the level it was printed at; the layout is shuffled by seed, so a scan cannot be read without it"
+  },
   "placement": {
     "picture": {
       "x_px": 467,

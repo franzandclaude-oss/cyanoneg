@@ -14,6 +14,8 @@ import pytest
 
 from cyanoneg.analyze import (
     AnalysisError,
+    QUANTITIES,
+    RESPONSE_CHANNEL,
     analyze_grid,
     analyze_wedge,
     analyze_zone_grid,
@@ -21,6 +23,7 @@ from cyanoneg.analyze import (
     detect_fiducials,
     homography,
     lightness,
+    sample_cells,
 )
 from cyanoneg.imageio import Image, save_tiff
 from cyanoneg.targets import blocker_grid, step_wedge, zone_blocker_grid
@@ -443,3 +446,72 @@ class TestFiducialSizeFilter:
         cands = [Blobby(24) for _ in range(4)] + [Blobby(9), Blobby(11), Blobby(35)]
         got = _expected_fiducial_size(NoPPI(), {"ppi": None}, 56, 2, cands)
         assert got == pytest.approx(24, abs=1.5)
+
+
+class TestResponseQuantity:
+    """``sample_cells`` accepted a ``quantity`` argument and ignored it for the whole of
+    phase 2 — flagged as V1 in the tricolour second review. Tricolour needs it live: a
+    madder-toned magenta layer read in luminance has its response diluted by two colorants
+    it never laid."""
+
+    def _wedge_scan(self, colour: bool):
+        wedge = step_wedge((255, 64, 0), saturation=1.0, levels=8, redundancy=2)
+        y = render_print(wedge, process_response)
+        return wedge, scan_of(y, colour=colour, scale=1.0, rotate_deg=0.0, perspective=0.0,
+                              noise=0.0, blur_px=0.4)
+
+    def test_default_is_neutral_and_costs_nothing(self):
+        """At the default, ``response`` *is* ``lstar`` — the mono path cannot have moved."""
+        wedge, scan = self._wedge_scan(colour=False)
+        frame = detect_fiducials(scan, wedge.sidecar)
+        for s in sample_cells(scan, wedge.sidecar, frame):
+            assert s["response"] == s["lstar"]
+            assert s["response_linear"] == s["y_linear"]
+            assert s["quantity"] == "lstar"
+
+    def test_a_channel_reads_differently_from_luminance(self):
+        """Liveness. If the argument were still ignored these would be equal."""
+        wedge, scan = self._wedge_scan(colour=True)
+        frame = detect_fiducials(scan, wedge.sidecar)
+        neutral = sample_cells(scan, wedge.sidecar, frame)
+        green = sample_cells(scan, wedge.sidecar, frame, quantity="lstar_g")
+        assert all(g["lstar"] == n["lstar"] for g, n in zip(green, neutral)), (
+            "the neutral pair must survive unchanged alongside the per-channel one"
+        )
+        assert any(abs(g["response"] - n["response"]) > 0.5 for g, n in zip(green, neutral))
+
+    def test_every_named_quantity_resolves(self):
+        wedge, scan = self._wedge_scan(colour=True)
+        frame = detect_fiducials(scan, wedge.sidecar)
+        for q in QUANTITIES:
+            got = sample_cells(scan, wedge.sidecar, frame, quantity=q)
+            assert all(c["quantity"] == q for c in got)
+        assert set(RESPONSE_CHANNEL) < set(QUANTITIES)
+
+    def test_unknown_quantity_is_refused(self):
+        wedge, scan = self._wedge_scan(colour=True)
+        frame = detect_fiducials(scan, wedge.sidecar)
+        with pytest.raises(AnalysisError, match="unknown quantity"):
+            sample_cells(scan, wedge.sidecar, frame, quantity="lstar_k")
+
+    def test_a_channel_cannot_be_read_from_a_mono_scan(self):
+        """The failure a tricolour user would otherwise hit as a silent neutral reading."""
+        wedge, mono = self._wedge_scan(colour=False)
+        assert mono.data.ndim == 2, "this test is only meaningful on a single-channel scan"
+        frame = detect_fiducials(mono, wedge.sidecar)
+        with pytest.raises(AnalysisError, match="needs a colour scan"):
+            sample_cells(mono, wedge.sidecar, frame, quantity="lstar_g")
+
+    def test_analyze_wedge_records_what_it_measured(self, tmp_path):
+        """A curve read through green is not comparable to one read in luminance."""
+        wedge, scan = self._wedge_scan(colour=True)
+        side = tmp_path / "w.json"
+        side.write_text(json.dumps(wedge.sidecar), encoding="utf-8")
+        path = save_tiff(tmp_path / "scan.tif", scan)
+
+        neutral = analyze_wedge(path, side)
+        green = analyze_wedge(path, side, quantity="lstar_g")
+        assert neutral.quantity == "lstar"
+        assert green.quantity == "lstar_g"
+        assert "lstar_g" in green.summary()
+        assert not np.allclose(neutral.measured_out, green.measured_out)

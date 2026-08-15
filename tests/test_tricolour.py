@@ -18,7 +18,7 @@ from pathlib import Path
 from cyanoneg import pipeline
 from cyanoneg.pipeline import PrintSize
 from cyanoneg.profiles import PROFILE_DIR, Profile
-from cyanoneg.targets import PPI, _mm, step_wedge
+from cyanoneg.targets import PPI, WEDGE_SEED, _mm, step_wedge
 from cyanoneg.tricolour import (
     ALLOWED_TO_DIFFER,
     CHANNEL_INDEX,
@@ -27,7 +27,10 @@ from cyanoneg.tricolour import (
     CONTROL_MM,
     FILM_FRAME,
     PRINT_FRAME,
+    SLOT_POSITIONS,
+    analyze_layer_wedge,
     film_rect,
+    slot_positions,
     to_print_orientation,
     MUST_AGREE,
     RESPONSE_QUANTITY,
@@ -1259,3 +1262,137 @@ class TestDarkroomSheet:
         assert "come from the scans taken between layers" in sheet
         # P2's number has exactly one chance to be taken.
         assert "fiducial span" in sheet.lower()
+
+
+class TestWedgeSidecars:
+    """The manifest named ``wedge_<role>.json`` from the start; nothing wrote them.
+
+    The patch layout is shuffled by a seed, so a scanned wedge without its sidecar is a
+    60 mm square of unattributable greys. The films for print #1 were made, measured and
+    about to be exposed before this was noticed, which is exactly how a dangling
+    reference survives: nothing reads it until the one moment it is needed."""
+
+    def _run(self, tmp_path, **kw):
+        tset, pdir = _seeded(tmp_path)
+        return make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="S", profile_dir=pdir, **kw
+        ), tmp_path / "out"
+
+    def test_sidecars_exist_where_the_manifest_says(self, tmp_path):
+        result, out = self._run(tmp_path)
+        for role in PRINT_ORDER:
+            named = result.manifest["layers"][role]["wedge_slot"]["sidecar"]
+            assert (out / named).exists(), f"{named} is referenced but absent"
+
+    def test_sidecar_is_a_readable_wedge(self, tmp_path):
+        """analyze_wedge refuses anything without a seed, so this is its acceptance test."""
+        _, out = self._run(tmp_path)
+        side = json.loads((out / "wedge_magenta.json").read_text(encoding="utf-8"))
+        assert "seed" in side and side["cells"]
+        assert side["levels"] == 16
+        assert len(side["cells"]) == 16 * 4
+
+    def test_manifest_records_enough_to_regenerate(self, tmp_path):
+        """Reproducing the sidecar must not depend on remembering the call site."""
+        result, _ = self._run(tmp_path)
+        w = result.manifest["wedge"]
+        assert (w["levels"], w["redundancy"], w["seed"]) == (16, 4, WEDGE_SEED)
+
+    def test_a_custom_seed_is_honoured_and_recorded(self, tmp_path):
+        result, out = self._run(tmp_path, wedge_seed=4242)
+        assert result.manifest["wedge"]["seed"] == 4242
+        assert json.loads((out / "wedge_cyan.json").read_text(encoding="utf-8"))["seed"] == 4242
+
+    def test_no_wedges_means_no_dangling_reference(self, tmp_path):
+        result, out = self._run(tmp_path, wedges=False)
+        assert result.manifest["wedge"] is None
+        assert not list(out.glob("wedge_*.json"))
+
+
+class TestSlotIdentity:
+    """Three pixel-identical squares; only position says which layer a crop is."""
+
+    def test_left_to_right_is_print_order(self, tmp_path):
+        tset, pdir = _seeded(tmp_path)
+        result = make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="P", profile_dir=pdir,
+        )
+        assert slot_positions(result.manifest) == dict(zip(PRINT_ORDER, SLOT_POSITIONS))
+
+    def test_the_wall_sheet_says_which_square_to_scan(self, tmp_path):
+        tset, pdir = _seeded(tmp_path)
+        make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="W", profile_dir=pdir,
+        )
+        sheet = (tmp_path / "out" / "W_tricolour.md").read_text(encoding="utf-8")
+        assert "the **left** one of the three" in sheet
+        assert "IDENTICAL" in sheet
+        assert "Left to right on the print: **magenta**, **yellow**, **cyan**" in sheet
+
+    def test_a_run_without_wedges_claims_no_positions(self, tmp_path):
+        tset, pdir = _seeded(tmp_path)
+        result = make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="N", profile_dir=pdir, wedges=False,
+        )
+        assert slot_positions(result.manifest) == {}
+        sheet = (tmp_path / "out" / "N_tricolour.md").read_text(encoding="utf-8")
+        assert "IDENTICAL" not in sheet
+
+
+class TestScanBack:
+    def _run(self, tmp_path):
+        tset, pdir = _seeded(tmp_path)
+        result = make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="B", profile_dir=pdir,
+        )
+        return result, tmp_path / "out"
+
+    def test_each_layer_is_read_through_its_own_channel(self, tmp_path):
+        """The quantity comes from the manifest, not from the caller, so a layer cannot
+        be read through the wrong channel by someone who has not thought about it."""
+        import simulate
+        from cyanoneg.imageio import save_tiff
+        from cyanoneg.targets import step_wedge as make_wedge
+
+        result, out = self._run(tmp_path)
+        wedge = make_wedge((255, 64, 0), saturation=1.0, levels=16, redundancy=4)
+        scan = simulate.scan_of(
+            simulate.render_print(wedge, lambda x: np.clip(x, 0, 1)),
+            colour=True, scale=1.0, rotate_deg=0.0, perspective=0.0, noise=0.0, blur_px=0.4,
+        )
+        path = save_tiff(out / "slot.tif", scan)
+
+        for role in PRINT_ORDER:
+            got = analyze_layer_wedge(out / "B_tricolour.json", role, path)
+            assert got.quantity == RESPONSE_QUANTITY[role]
+
+    def test_a_missing_sidecar_says_how_to_get_it_back(self, tmp_path):
+        result, out = self._run(tmp_path)
+        (out / "wedge_magenta.json").unlink()
+        with pytest.raises(TricolourSetError, match="step_wedge"):
+            analyze_layer_wedge(out / "B_tricolour.json", "magenta", out / "B_1M.tif")
+
+    def test_a_run_without_wedges_is_refused_clearly(self, tmp_path):
+        tset, pdir = _seeded(tmp_path)
+        make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="X", profile_dir=pdir, wedges=False,
+        )
+        out = tmp_path / "out"
+        with pytest.raises(TricolourSetError, match="nothing to read back"):
+            analyze_layer_wedge(out / "X_tricolour.json", "cyan", out / "X_3C.tif")
+
+    def test_unknown_layer_refused(self, tmp_path):
+        _, out = self._run(tmp_path)
+        with pytest.raises(ValueError, match="unknown layer"):
+            analyze_layer_wedge(out / "B_tricolour.json", "green", out / "B_1M.tif")
+
+    def test_a_dict_manifest_needs_its_directory(self, tmp_path):
+        result, _ = self._run(tmp_path)
+        with pytest.raises(ValueError, match="manifest_dir is required"):
+            analyze_layer_wedge(result.manifest, "magenta", "unused.tif")

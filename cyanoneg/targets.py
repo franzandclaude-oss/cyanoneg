@@ -408,10 +408,17 @@ def _grid_shape(count: int, target_aspect: float = 2.0) -> tuple[int, int]:
     return best[1], best[2]
 
 
+#: Default shuffle seed for the step wedge. A named constant because the seed is not a
+#: preference: it is the only thing that maps a scanned patch back to the level it was
+#: printed at. Callers that record their configuration need to record *this* number, so it
+#: has to be referable rather than buried in a signature default.
+WEDGE_SEED = 20260725
+
+
 def step_wedge(
     blocker_rgb: tuple[int, int, int],
     saturation: float = 1.0,
-    seed: int = 20260725,
+    seed: int = WEDGE_SEED,
     redundancy: int = DEFAULT_REDUNDANCY,
     levels: int = DEFAULT_LEVELS,
     patch_mm: float = 5.5,
@@ -602,7 +609,7 @@ def main(argv: list[str] | None = None) -> int:
         help="blocker R,G,B for the exposure strip and wedge (default placeholder red)",
     )
     parser.add_argument("--saturation", type=float, default=1.0, help="wedge blocker saturation")
-    parser.add_argument("--seed", type=int, default=20260725, help="wedge randomisation seed")
+    parser.add_argument("--seed", type=int, default=WEDGE_SEED, help="wedge randomisation seed")
     parser.add_argument(
         "--levels",
         type=int,

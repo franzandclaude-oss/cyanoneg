@@ -81,6 +81,39 @@ def lightness(y: np.ndarray) -> np.ndarray:
     return 116.0 * f - 16.0
 
 
+#: What a patch is measured *with*. ``lstar`` is neutral lightness, correct for a
+#: monochrome cyanotype where the print has one colorant and luminance carries all of it.
+#:
+#: The per-channel entries exist for tricolour. A madder-toned magenta layer absorbs
+#: green; measured in luminance its response is diluted by the other two channels, and
+#: after the full M -> Y -> C cycle it would be read through colorants that had nothing to
+#: do with it. ``lstar_g`` reads the layer through the channel it actually modulates.
+#: ``tricolour.RESPONSE_QUANTITY`` maps each layer to its own.
+RESPONSE_CHANNEL = {"lstar_r": 0, "lstar_g": 1, "lstar_b": 2}
+QUANTITIES = ("lstar", *RESPONSE_CHANNEL)
+
+
+def _response_plane(scan: Image, quantity: str) -> np.ndarray:
+    """The linear-light plane a given quantity is measured from.
+
+    Per-channel quantities take the channel's own linear value in place of luminance and
+    push it through the same L* curve, so the two are on one scale and the normalisation
+    and density-range maths downstream need no special case.
+    """
+    if quantity == "lstar":
+        return luminance(scan)
+    if quantity not in RESPONSE_CHANNEL:
+        raise AnalysisError(
+            f"unknown quantity {quantity!r}; expected one of {', '.join(QUANTITIES)}"
+        )
+    if scan.data.ndim != 3:
+        raise AnalysisError(
+            f"{quantity} needs a colour scan, but this one is single-channel — a mono "
+            "scan cannot separate a layer from the colorants printed over it"
+        )
+    return to_linear(scan.data, scan.space)[..., RESPONSE_CHANNEL[quantity]].astype(np.float32)
+
+
 # --------------------------------------------------------------------------- homography
 
 
@@ -369,8 +402,15 @@ def sample_cells(scan: Image, sidecar: dict, frame: Frame, quantity: str = "lsta
     looks like means predicting its colour, and Prussian blue desaturates towards paper
     along a curve no two-endpoint blend reproduces. Measuring it here costs nothing and
     means the proof never has to model it.
+
+    ``quantity`` selects what ``response`` and ``response_linear`` hold. ``lstar`` and
+    ``y_linear`` are always the neutral pair regardless, so a per-channel reading never
+    costs the luminance one — useful when comparing a toned layer against the stain floor
+    the control region gives. At the default the two pairs are the same numbers, which is
+    what keeps the mono path byte-identical.
     """
     y_full = luminance(scan)
+    response_full = _response_plane(scan, quantity)
     rgb_full = to_linear(scan.data, scan.space) if scan.data.ndim == 3 else None
     cells = sidecar["cells"]
     centres_print = np.array(
@@ -402,6 +442,17 @@ def sample_cells(scan: Image, sidecar: dict, frame: Frame, quantity: str = "lsta
         record["y_linear"] = y_med
         record["lstar"] = float(lightness(np.array([y_med]))[0])
         record["spread"] = float(q3 - q1)
+        if quantity == "lstar":
+            record["response_linear"], record["response"] = y_med, record["lstar"]
+        else:
+            r_med = float(
+                np.median(
+                    response_full[yc - half : yc + half + 1, xc - half : xc + half + 1]
+                )
+            )
+            record["response_linear"] = r_med
+            record["response"] = float(lightness(np.array([r_med]))[0])
+        record["quantity"] = quantity
         if rgb_full is not None:
             patch = rgb_full[yc - half : yc + half + 1, xc - half : xc + half + 1]
             record["rgb"] = [float(v) for v in np.median(patch.reshape(-1, 3), axis=0)]
@@ -423,25 +474,41 @@ class WedgeAnalysis:
     black_lstar: float
     warnings: list[str]
     raw_patches: list[dict]
+    #: Which quantity every number above was measured with. Recorded because a curve read
+    #: through green is not comparable to one read in luminance, and nothing else says so.
+    quantity: str = "lstar"
 
     def summary(self) -> str:
         lines = [
+            f"measured in: {self.quantity}",
             f"density range (reflection, est.): {self.density_range:.2f}",
-            f"paper white L*: {self.paper_lstar:.1f}   max black L*: {self.black_lstar:.1f}",
+            f"paper white: {self.paper_lstar:.1f}   max black: {self.black_lstar:.1f}",
             f"spikes flagged: {len(self.spikes)}",
         ]
         lines += [f"WARNING: {w}" for w in self.warnings]
         return "\n".join(lines)
 
 
-def analyze_wedge(scan_path: str | Path, sidecar_path: str | Path, *, space=None) -> WedgeAnalysis:
-    """Full wedge chain: scan + sidecar → correction LUT + quality report."""
+def analyze_wedge(
+    scan_path: str | Path,
+    sidecar_path: str | Path,
+    *,
+    space=None,
+    quantity: str = "lstar",
+) -> WedgeAnalysis:
+    """Full wedge chain: scan + sidecar → correction LUT + quality report.
+
+    ``quantity`` picks what the curve is built from. The default reads neutral lightness,
+    which is right for a single-colorant cyanotype. A tricolour layer passes its own
+    channel (``tricolour.RESPONSE_QUANTITY``), because a toned layer measured in luminance
+    has its response diluted by two colorants it did not lay.
+    """
     sidecar = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
     if "seed" not in sidecar:
         raise AnalysisError(f"{sidecar_path} is not a step-wedge sidecar")
     scan = load_image(scan_path, space=space)
     frame = detect_fiducials(scan, sidecar)
-    samples = sample_cells(scan, sidecar, frame)
+    samples = sample_cells(scan, sidecar, frame, quantity=quantity)
 
     # Group copies by level.
     by_value: dict[int, list[dict]] = {}
@@ -454,8 +521,8 @@ def analyze_wedge(scan_path: str | Path, sidecar_path: str | Path, *, space=None
     # Polarity (see blocker.py): the top patch value is black in the negative, so it lays
     # maximum ink, blocks UV and leaves paper white. Value 0 is clear film → max black.
     top = sidecar["levels"] - 1
-    paper_lstar = float(np.mean([s["lstar"] for s in by_value[top]]))
-    black_lstar = float(np.mean([s["lstar"] for s in by_value[0]]))
+    paper_lstar = float(np.mean([s["response"] for s in by_value[top]]))
+    black_lstar = float(np.mean([s["response"] for s in by_value[0]]))
     if paper_lstar - black_lstar < 5.0:
         raise AnalysisError(
             "paper-white and max-black references are nearly identical — "
@@ -471,7 +538,7 @@ def analyze_wedge(scan_path: str | Path, sidecar_path: str | Path, *, space=None
     measured_in = np.array([v / (sidecar["levels"] - 1) for v in levels])
     measured_out = np.empty(len(levels))
     for i, v in enumerate(levels):
-        copies = np.array([normalise(s["lstar"]) for s in by_value[v]])
+        copies = np.array([normalise(s["response"]) for s in by_value[v]])
         keep = np.ones(len(copies), dtype=bool)
 
         if len(copies) > 2:
@@ -511,8 +578,10 @@ def analyze_wedge(scan_path: str | Path, sidecar_path: str | Path, *, space=None
         measured_out[i] = float(copies[keep].mean())
 
     # Density range from the linear-luminance references.
-    y_paper = float(np.mean([s["y_linear"] for s in by_value[top]]))
-    y_black = float(np.mean([s["y_linear"] for s in by_value[0]]))
+    # From the same quantity the curve was built from, or the reported range would
+    # describe a different measurement than the LUT beside it.
+    y_paper = float(np.mean([s["response_linear"] for s in by_value[top]]))
+    y_black = float(np.mean([s["response_linear"] for s in by_value[0]]))
     density_range = float(np.log10(max(y_paper, 1e-6) / max(y_black, 1e-6)))
     if density_range < DR_WINDOW[0]:
         warnings.append(
@@ -535,6 +604,7 @@ def analyze_wedge(scan_path: str | Path, sidecar_path: str | Path, *, space=None
     raw_patches = [
         {"value": s["value"], "row": s["row"], "col": s["col"], "lstar": round(s["lstar"], 3),
          "y_linear": round(s["y_linear"], 6), "spread": round(s["spread"], 6),
+         "response": round(s["response"], 3), "response_linear": round(s["response_linear"], 6),
          **({"rgb": [round(v, 6) for v in s["rgb"]]} if "rgb" in s else {})}
         for s in samples
     ]
@@ -548,6 +618,7 @@ def analyze_wedge(scan_path: str | Path, sidecar_path: str | Path, *, space=None
         black_lstar=black_lstar,
         warnings=warnings,
         raw_patches=raw_patches,
+        quantity=quantity,
     )
 
 

@@ -29,7 +29,7 @@ from .blocker import apply_blocker
 from .imageio import Image
 from .pipeline import PrintSize
 from .profiles import PROFILE_DIR, Profile
-from .targets import A4_MM, PPI, Target, _font, _mm, apply_frame, step_wedge
+from .targets import A4_MM, PPI, WEDGE_SEED, Target, _font, _mm, apply_frame, step_wedge
 
 #: Rec.709 luma weights, the grey axis saturation is scaled about.
 _REC709 = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
@@ -906,6 +906,10 @@ def make_tricolour(
     wedges: bool = True,
     wedge_levels: int = 16,
     wedge_redundancy: int = 4,
+    #: Explicit rather than left to the generator's default. The patch layout is shuffled
+    #: by this number, so it is the difference between a scan that can be read and a
+    #: 60 mm square of unattributable greys.
+    wedge_seed: int = WEDGE_SEED,
     space: cio.Space | None = None,
     raw_scan: bool = False,
     output_ppi: float = PPI,
@@ -963,6 +967,7 @@ def make_tricolour(
     saturation = float(reference.blocker["saturation"])
 
     wedge_targets = None
+    wedge_manifest: dict[str, Any] | None = None
     if wedges:
         wedge_targets = {
             role: step_wedge(
@@ -970,8 +975,31 @@ def make_tricolour(
                 saturation=saturation,
                 levels=wedge_levels,
                 redundancy=wedge_redundancy,
+                seed=wedge_seed,
             )
             for role in PRINT_ORDER
+        }
+        # Written, not just named. The patch layout is shuffled, so a scan of a wedge is
+        # unreadable without the sidecar that says which level each cell holds, and
+        # ``analyze_wedge`` takes that file as an argument. The manifest has always
+        # pointed at ``wedge_<role>.json``; until now nothing created them.
+        #
+        # The three are identical while the seed is shared, and are still written per
+        # role: the manifest addresses them per role, and a set that ever varies the seed
+        # per layer would otherwise silently alias three layers onto one layout.
+        for role, target in wedge_targets.items():
+            (output_dir / f"wedge_{role}.json").write_text(
+                json.dumps(target.sidecar, indent=2) + "\n", encoding="utf-8"
+            )
+        wedge_manifest = {
+            "levels": wedge_levels,
+            "redundancy": wedge_redundancy,
+            "seed": wedge_seed,
+            "sidecars": {role: f"wedge_{role}.json" for role in PRINT_ORDER},
+            "note": (
+                "the sidecar maps each cell to the level it was printed at; the layout is "
+                "shuffled by seed, so a scan cannot be read without it"
+            ),
         }
 
     border_px = _mm(tset.border_mm)
@@ -1105,6 +1133,7 @@ def make_tricolour(
             "warn_above": CLIP_WARN,
         },
         "blocker": {"rgb": list(blocker_rgb), "saturation": saturation},
+        "wedge": wedge_manifest,
         "placement": page_geometry,
         "layers": layer_manifest,
         "warnings": warnings,
@@ -1195,6 +1224,79 @@ def seed_provisional_set(
     return tset, profiles
 
 
+#: Where each wedge slot sits on the finished print, left to right.
+#:
+#: The contact print un-mirrors the film, so the slots appear on paper in the same order
+#: the manifest records them — which is print order. Worth stating rather than deriving in
+#: someone's head at a scanner: the three squares are pixel-identical, and nothing
+#: downstream can catch a mislabelled crop.
+SLOT_POSITIONS = ("left", "middle", "right")
+
+
+def slot_positions(manifest: dict[str, Any]) -> dict[str, str]:
+    """Map each layer to its wedge slot's position on the print, or {} if there are none."""
+    wedges = manifest["placement"].get("wedges")
+    if not wedges or len(wedges) != len(SLOT_POSITIONS):
+        return {}
+    left_to_right = sorted(wedges, key=lambda role: wedges[role]["x_mm"])
+    return dict(zip(left_to_right, SLOT_POSITIONS))
+
+
+def analyze_layer_wedge(
+    manifest: dict[str, Any] | str | Path,
+    role: str,
+    scan_path: str | Path,
+    *,
+    manifest_dir: str | Path | None = None,
+    space: Any = None,
+):
+    """Read one layer's wedge back from a scan, through that layer's own quantity.
+
+    ``scan_path`` is a scan cropped to the one wedge slot. It cannot be the whole sheet:
+    ``detect_fiducials`` takes the bounding box of every candidate mark it finds, and a
+    full sheet carries the picture's fiducials, the control's, and the printed wedge's, so
+    the frame it derived would span the page rather than the target.
+
+    Which slot to crop is not recoverable from the image. All three wedges are generated
+    from one seed and are pixel-identical, so only position on the sheet identifies them —
+    see :func:`slot_positions`, and the wall sheet, which names it per layer.
+
+    The quantity comes from the manifest's own ``response_quantity`` rather than from an
+    argument, so a layer cannot be read through the wrong channel by a caller who has not
+    thought about it.
+    """
+    from .analyze import analyze_wedge
+
+    if isinstance(manifest, (str, Path)):
+        path = Path(manifest)
+        manifest_dir = manifest_dir or path.parent
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    if manifest_dir is None:
+        raise ValueError(
+            "manifest_dir is required when the manifest is passed as a dict — the "
+            "sidecars are found relative to it"
+        )
+    if role not in PRINT_ORDER:
+        raise ValueError(f"unknown layer {role!r}; expected one of {PRINT_ORDER}")
+
+    wedge = manifest.get("wedge")
+    if not wedge:
+        raise TricolourSetError(
+            f"this run was generated without wedges, so {role} has nothing to read back"
+        )
+    sidecar = Path(manifest_dir) / wedge["sidecars"][role]
+    if not sidecar.exists():
+        raise TricolourSetError(
+            f"{sidecar} is missing. The patch layout is shuffled by seed "
+            f"{wedge['seed']}, so the scan cannot be read without it; regenerate with "
+            "step_wedge(levels=%d, redundancy=%d, seed=%d)"
+            % (wedge["levels"], wedge["redundancy"], wedge["seed"])
+        )
+
+    quantity = manifest["layers"][role]["response_quantity"]
+    return analyze_wedge(scan_path, sidecar, space=space, quantity=quantity)
+
+
 def darkroom_sheet(manifest: dict[str, Any]) -> str:
     """The wall sheet: the same run, arranged for someone standing at the enlarger.
 
@@ -1245,9 +1347,11 @@ def darkroom_sheet(manifest: dict[str, Any]) -> str:
         "so it cannot be relied on — a missed scan costs a full three-session cycle.",
         "",
     ]
+    positions = slot_positions(manifest)
     for role in PRINT_ORDER:
         layer = manifest["layers"][role]
         e = layer["exposure"]
+        where = f" — the **{positions[role]}** one of the three" if positions else ""
         out += [
             f"## {layer['print_order']}. {role.upper()} — `{layer['negative']}`",
             "",
@@ -1256,13 +1360,27 @@ def darkroom_sheet(manifest: dict[str, Any]) -> str:
             f"- Sensitizer: {layer['sensitizer'] or '—'}",
             f"- Then: {layer['chemistry'] or '—'}",
             "- Dry flat (cold air only — heat warps the dimensional scale).",
-            f"- **SCAN the {role} wedge slot now**"
+            f"- **SCAN the {role} wedge slot now**{where}"
             + (
                 "." if role == PRINT_ORDER[-1]
                 else ", before coating the next layer."
             ),
             "  SilverFast raw, converted in Photoshop — the same path as the existing",
             "  calibration sheets, or the comparison means nothing.",
+            "",
+        ]
+    if positions:
+        left_to_right = sorted(positions.items(), key=lambda kv: SLOT_POSITIONS.index(kv[1]))
+        out += [
+            "## THE THREE WEDGE SLOTS LOOK IDENTICAL",
+            "",
+            "Left to right on the print: **"
+            + "**, **".join(role for role, _ in left_to_right)
+            + "**.",
+            "",
+            "They come from one seed and are pixel-identical, so position on the sheet is",
+            "the only thing that says which layer a crop belongs to. Label each crop as",
+            "you make it — a swapped pair gives two plausible curves and no error.",
             "",
         ]
     out += [

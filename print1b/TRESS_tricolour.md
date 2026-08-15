@@ -30,7 +30,7 @@ so it cannot be relied on — a missed scan costs a full three-session cycle.
 - Sensitizer: 10/10
 - Then: expose → wash → sodium carbonate bleach → madder root tone
 - Dry flat (cold air only — heat warps the dimensional scale).
-- **SCAN the magenta wedge slot now**, before coating the next layer.
+- **SCAN the magenta wedge slot now** — the **left** one of the three, before coating the next layer.
   SilverFast raw, converted in Photoshop — the same path as the existing
   calibration sheets, or the comparison means nothing.
 
@@ -40,7 +40,7 @@ so it cannot be relied on — a missed scan costs a full three-session cycle.
 - Sensitizer: 10/10
 - Then: heavy overexpose → wash → carbonate bleach to Fe(III) hydroxide
 - Dry flat (cold air only — heat warps the dimensional scale).
-- **SCAN the yellow wedge slot now**, before coating the next layer.
+- **SCAN the yellow wedge slot now** — the **middle** one of the three, before coating the next layer.
   SilverFast raw, converted in Photoshop — the same path as the existing
   calibration sheets, or the comparison means nothing.
 
@@ -50,9 +50,17 @@ so it cannot be relied on — a missed scan costs a full three-session cycle.
 - Sensitizer: 5/5 (1:1 dilute)
 - Then: classic, untoned
 - Dry flat (cold air only — heat warps the dimensional scale).
-- **SCAN the cyan wedge slot now**.
+- **SCAN the cyan wedge slot now** — the **right** one of the three.
   SilverFast raw, converted in Photoshop — the same path as the existing
   calibration sheets, or the comparison means nothing.
+
+## THE THREE WEDGE SLOTS LOOK IDENTICAL
+
+Left to right on the print: **magenta**, **yellow**, **cyan**.
+
+They come from one seed and are pixel-identical, so position on the sheet is
+the only thing that says which layer a crop belongs to. Label each crop as
+you make it — a swapped pair gives two plausible curves and no error.
 
 ## After cyan — the experiment
 
