@@ -502,6 +502,45 @@ class TestResponseQuantity:
         with pytest.raises(AnalysisError, match="needs a colour scan"):
             sample_cells(mono, wedge.sidecar, frame, quantity="lstar_g")
 
+    def test_the_density_window_is_not_applied_to_a_bleached_layer(self, tmp_path):
+        """DR_WINDOW is a Prussian-blue number, measured in luminance on an untoned print.
+
+        Yellow is a pale Fe(OH)3 ochre read through blue; its range has no reason to land
+        in 1.2-1.4, so grading it against that window fires on every yellow analysis. A
+        warning that is always wrong is worse than none — it trains the reader to skip the
+        ones that are right. The range is still computed and still reported; it is simply
+        not graded against a window that does not describe it.
+        """
+        wedge, scan = self._wedge_scan(colour=True)
+        side = tmp_path / "w.json"
+        side.write_text(json.dumps(wedge.sidecar), encoding="utf-8")
+        path = save_tiff(tmp_path / "scan.tif", scan)
+
+        blue = analyze_wedge(path, side, quantity="lstar_b")
+        assert not any("below the" in w or "above the" in w for w in blue.warnings), (
+            "a bleached layer was graded against the Prussian-blue window"
+        )
+        assert any("not applied here" in w for w in blue.warnings)
+        assert any(f"{blue.density_range:.2f}" in w for w in blue.warnings), (
+            "the range must still be reported, not silently dropped"
+        )
+
+    def test_the_window_still_applies_to_neutral_readings(self):
+        """The gate must not disarm the check for the mono path it was written for."""
+        # A real print with real separation between its references, but shadows that never
+        # reach black — a low density range, which is what the window is there to catch.
+        wedge = step_wedge((255, 64, 0), saturation=1.0, levels=8, redundancy=2)
+        weak = render_print(wedge, lambda x: 0.35 + 0.65 * np.asarray(x))
+        scan = scan_of(weak, scale=1.0, rotate_deg=0.0, perspective=0.0, noise=0.0,
+                       blur_px=0.4)
+        import tempfile, pathlib
+        with tempfile.TemporaryDirectory() as d:
+            d = pathlib.Path(d)
+            (d / "w.json").write_text(json.dumps(wedge.sidecar), encoding="utf-8")
+            got = analyze_wedge(save_tiff(d / "s.tif", scan), d / "w.json")
+        assert any("window" in w for w in got.warnings)
+        assert not any("not applied here" in w for w in got.warnings)
+
     def test_analyze_wedge_records_what_it_measured(self, tmp_path):
         """A curve read through green is not comparable to one read in luminance."""
         wedge, scan = self._wedge_scan(colour=True)

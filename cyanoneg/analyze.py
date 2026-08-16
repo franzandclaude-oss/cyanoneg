@@ -577,13 +577,29 @@ def analyze_wedge(
 
         measured_out[i] = float(copies[keep].mean())
 
-    # Density range from the linear-luminance references.
     # From the same quantity the curve was built from, or the reported range would
     # describe a different measurement than the LUT beside it.
     y_paper = float(np.mean([s["response_linear"] for s in by_value[top]]))
     y_black = float(np.mean([s["response_linear"] for s in by_value[0]]))
     density_range = float(np.log10(max(y_paper, 1e-6) / max(y_black, 1e-6)))
-    if density_range < DR_WINDOW[0]:
+
+    # DR_WINDOW is a Prussian-blue number, measured in luminance on a classic cyanotype.
+    # A bleached layer is not that print and is not read in that quantity: yellow is a
+    # pale Fe(OH)3 ochre measured through blue, and its range has no reason to land
+    # between 1.2 and 1.4. Judging it against this window would fire on every yellow
+    # analysis, and a warning that is always wrong is worse than none — it teaches the
+    # reader to skip the warnings that are right.
+    #
+    # Not silently dropped, though: the range is still computed and still reported, it
+    # just isn't graded against a window that does not describe it.
+    if quantity != "lstar":
+        warnings.append(
+            f"density range {density_range:.2f} measured in {quantity}; the "
+            f"{DR_WINDOW[0]}–{DR_WINDOW[1]} window describes luminance on an untoned "
+            "Prussian-blue print, so it is not applied here — no comparable window has "
+            "been measured for this layer yet"
+        )
+    elif density_range < DR_WINDOW[0]:
         warnings.append(
             f"density range {density_range:.2f} is below the {DR_WINDOW[0]}–{DR_WINDOW[1]} window — "
             "under-exposure, weak chemistry, or the blocker passes too much UV"
