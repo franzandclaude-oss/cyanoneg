@@ -27,8 +27,10 @@ from cyanoneg.tricolour import (
     CONTROL_MM,
     FILM_FRAME,
     PRINT_FRAME,
+    MIN_SEPARATION,
     SLOT_POSITIONS,
     analyze_layer_wedge,
+    diagnose_layer,
     film_rect,
     slot_positions,
     to_print_orientation,
@@ -1396,3 +1398,114 @@ class TestScanBack:
         result, _ = self._run(tmp_path)
         with pytest.raises(ValueError, match="manifest_dir is required"):
             analyze_layer_wedge(result.manifest, "magenta", "unused.tif")
+
+
+class TestDiagnoseLayer:
+    """A failure that reports nothing cannot be compared against the next failure.
+
+    ``analyze_layer_wedge`` either returns a curve or raises, which is right for deriving
+    a profile and wrong for someone changing bleach and toning between attempts. The
+    first real magenta print separated by -2.5 L* on a sheet whose bare paper read 55
+    instead of 95; that is a diagnosis, and it has to survive being reported."""
+
+    def _run(self, tmp_path):
+        tset, pdir = _seeded(tmp_path)
+        make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "out",
+            stem="D", profile_dir=pdir,
+        )
+        return tmp_path / "out" / "D_tricolour.json"
+
+    def _wedge_crop(self, response):
+        import simulate
+        from cyanoneg.targets import step_wedge as mk
+        w = mk((255, 64, 0), saturation=1.0, levels=16, redundancy=4)
+        return simulate.scan_of(
+            simulate.render_print(w, response), colour=True, scale=1.0, rotate_deg=0.0,
+            perspective=0.0, noise=0.0, blur_px=0.4,
+        )
+
+    #: The simulator renders paper white at this L*. The sheet stand-in has to agree with
+    #: it, or every comparison between "bare paper" and "the wedge's white" is measuring
+    #: the gap between two different notions of paper rather than anything about the print.
+    SIM_PAPER_LSTAR = 93.0
+
+    def _sheet(self, lstar: float):
+        """A stand-in sheet at a given lightness: only its corners are ever read."""
+        from cyanoneg.imageio import from_linear
+
+        y = ((lstar + 16.0) / 116.0) ** 3
+        srgb = float(from_linear(np.full((1, 1, 3), y, dtype=np.float32), "srgb")[0, 0, 0])
+        return Image(np.full((240, 200, 3), srgb, dtype=np.float32), "srgb", ppi=300)
+
+    def test_a_working_layer_separates_and_yields_a_curve(self, tmp_path):
+        manifest = self._run(tmp_path)
+        got = diagnose_layer(
+            manifest, "magenta", self._sheet(self.SIM_PAPER_LSTAR), self._wedge_crop(lambda x: np.clip(x, 0, 1))
+        )
+        assert got.separated
+        assert got.separation >= MIN_SEPARATION
+        assert got.analysis is not None
+        assert got.quantity == "lstar_g"
+        assert "SEPARATED" in got.summary()
+
+    def test_a_stained_sheet_is_called_out(self, tmp_path):
+        """The finding that mattered: paper white is not 100 when a dye bath has run."""
+        manifest = self._run(tmp_path)
+        got = diagnose_layer(
+            manifest, "magenta", self._sheet(55.0), self._wedge_crop(lambda x: np.clip(x, 0, 1))
+        )
+        assert got.stain_floor < 90.0
+        assert any("the sheet itself is stained" in n for n in got.notes)
+
+    def test_a_flat_wedge_reports_how_far_off_it_was(self, tmp_path):
+        """Not "the print failed" — the number, so two attempts can be compared."""
+        manifest = self._run(tmp_path)
+        got = diagnose_layer(
+            manifest, "magenta", self._sheet(55.0), self._wedge_crop(lambda x: 0.5 + 0.0 * x)
+        )
+        assert not got.separated
+        assert got.analysis is None
+        assert abs(got.separation) < MIN_SEPARATION
+        assert any("did not separate" in n for n in got.notes)
+        assert f"{got.separation:5.1f}" in got.summary()
+
+    def test_fog_is_distinguished_from_underexposure(self, tmp_path):
+        """Two faults that look alike on the sheet and want opposite corrections.
+
+        A dark print whose *blocked* patches are still clean is underexposed and wants
+        more light. Blocked patches darker than bare paper mean the darkening came with
+        the coating or the chemistry, and more light cannot fix it. The first magenta
+        print was the second kind: blocked patches 14 L* below an uncoated corner.
+        """
+        manifest = self._run(tmp_path)
+        dark = diagnose_layer(
+            manifest, "magenta", self._sheet(self.SIM_PAPER_LSTAR),
+            # weak shadows, but full ink still reaches paper white — underexposed
+            self._wedge_crop(lambda x: 0.60 + 0.40 * np.clip(x, 0, 1)),
+        )
+        assert not any("below bare paper" in n for n in dark.notes), (
+            "an underexposed print with clean blocked patches must not be called fogged"
+        )
+
+        fogged = diagnose_layer(
+            manifest, "magenta", self._sheet(self.SIM_PAPER_LSTAR),
+            self._wedge_crop(lambda x: 0.05 + 0.25 * np.clip(x, 0, 1)),
+        )
+        assert any("below bare paper" in n for n in fogged.notes)
+
+    def test_unknown_layer_and_missing_wedges_refused(self, tmp_path):
+        manifest = self._run(tmp_path)
+        with pytest.raises(ValueError, match="unknown layer"):
+            diagnose_layer(manifest, "green", self._sheet(self.SIM_PAPER_LSTAR), self._wedge_crop(lambda x: x))
+
+        tset, pdir = _seeded(tmp_path)
+        make_tricolour(
+            _independent_rgb(), tset, PrintSize(130, 100), output_dir=tmp_path / "nw",
+            stem="N", profile_dir=pdir, wedges=False,
+        )
+        with pytest.raises(TricolourSetError, match="no wedges"):
+            diagnose_layer(
+                tmp_path / "nw" / "N_tricolour.json", "magenta",
+                self._sheet(self.SIM_PAPER_LSTAR), self._wedge_crop(lambda x: x),
+            )

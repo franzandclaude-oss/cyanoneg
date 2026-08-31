@@ -490,7 +490,7 @@ class WedgeAnalysis:
 
 
 def analyze_wedge(
-    scan_path: str | Path,
+    scan_path: str | Path | Image,
     sidecar_path: str | Path,
     *,
     space=None,
@@ -506,7 +506,9 @@ def analyze_wedge(
     sidecar = json.loads(Path(sidecar_path).read_text(encoding="utf-8"))
     if "seed" not in sidecar:
         raise AnalysisError(f"{sidecar_path} is not a step-wedge sidecar")
-    scan = load_image(scan_path, space=space)
+    # An already-loaded scan is accepted so a caller holding a crop in memory need not
+    # round-trip it through disk to have it read.
+    scan = scan_path if isinstance(scan_path, Image) else load_image(scan_path, space=space)
     frame = detect_fiducials(scan, sidecar)
     samples = sample_cells(scan, sidecar, frame, quantity=quantity)
 
@@ -524,9 +526,17 @@ def analyze_wedge(
     paper_lstar = float(np.mean([s["response"] for s in by_value[top]]))
     black_lstar = float(np.mean([s["response"] for s in by_value[0]]))
     if paper_lstar - black_lstar < 5.0:
+        # Carry the numbers. "The print failed" is true but useless to someone iterating
+        # on chemistry: the difference between 4 L* and 0.4 L* of separation is the
+        # difference between nearly there and nothing happened, and only one of them is
+        # worth another sheet of paper.
         raise AnalysisError(
-            "paper-white and max-black references are nearly identical — "
-            "wrong scan, or the print failed"
+            f"the wedge did not separate: its full-ink patches read {paper_lstar:.1f} and "
+            f"its clear-film patches {black_lstar:.1f} in {quantity}, a spread of "
+            f"{paper_lstar - black_lstar:.1f} against the {5.0:.0f} needed to measure "
+            "anything. The negative's densest and clearest patches printed the same, so "
+            "there is no scale here to fit a curve to — the process did not separate, "
+            "rather than separating badly"
         )
 
     def normalise(lstar: float) -> float:

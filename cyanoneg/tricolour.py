@@ -1245,7 +1245,7 @@ def slot_positions(manifest: dict[str, Any]) -> dict[str, str]:
 def analyze_layer_wedge(
     manifest: dict[str, Any] | str | Path,
     role: str,
-    scan_path: str | Path,
+    scan_path: Any,
     *,
     manifest_dir: str | Path | None = None,
     space: Any = None,
@@ -1295,6 +1295,171 @@ def analyze_layer_wedge(
 
     quantity = manifest["layers"][role]["response_quantity"]
     return analyze_wedge(scan_path, sidecar, space=space, quantity=quantity)
+
+
+#: Sheet corners are sampled this far in, as a fraction of the short edge.
+#:
+#: Far enough past the deckle and any handling marks to be clean paper, near enough that
+#: no sane coating reaches it. This is the only measurement on the sheet that needs no
+#: registration at all, which is what makes it trustworthy when everything else is
+#: uncertain.
+CORNER_INSET = 0.02
+
+#: Below this spread, in L*, a wedge has not separated enough to fit a curve to.
+#: Matches the reference check inside ``analyze_wedge`` so the two cannot disagree.
+MIN_SEPARATION = 5.0
+
+#: How far a fully-blocked patch may sit below bare paper before it is called fog.
+#:
+#: Full blocker is supposed to leave paper untouched, so a blocked patch and an uncoated
+#: corner should read alike. When the blocked patch is markedly darker, the darkening
+#: arrived with the coating or the chemistry rather than through the negative — a
+#: different fault from underexposure, and not one more exposure will fix. Distinguishing
+#: the two is the point: a dark print with clean blocked patches wants more light; this
+#: wants less chemistry.
+FOG_TOLERANCE = 3.0
+
+
+@dataclass
+class LayerDiagnosis:
+    """What a scanned layer says about the process, whether or not it yielded a curve."""
+
+    role: str
+    quantity: str
+    stain_floor: float          # bare paper, after this layer's chemistry
+    wedge_white: float          # full-ink patches: the negative's paper-white reference
+    wedge_black: float          # clear-film patches: the negative's max-black reference
+    separation: float
+    separated: bool
+    analysis: Any = None        # WedgeAnalysis, when there was a scale to fit
+    notes: list[str] = field(default_factory=list)
+
+    def summary(self) -> str:
+        verdict = "SEPARATED" if self.separated else "DID NOT SEPARATE"
+        lines = [
+            f"{self.role} — {verdict}   (measured in {self.quantity})",
+            "",
+            f"  bare paper, uncoated corner   {self.stain_floor:5.1f}",
+            f"  wedge, full-ink patches       {self.wedge_white:5.1f}",
+            f"  wedge, clear-film patches     {self.wedge_black:5.1f}",
+            f"  separation                    {self.separation:5.1f}"
+            f"   (need {MIN_SEPARATION:.0f} to fit a curve)",
+        ]
+        lines += [f"  ! {n}" for n in self.notes]
+        return "\n".join(lines)
+
+
+def diagnose_layer(
+    manifest: dict[str, Any] | str | Path,
+    role: str,
+    sheet_scan: Any,
+    wedge_scan: Any,
+    *,
+    manifest_dir: str | Path | None = None,
+) -> LayerDiagnosis:
+    """Report a layer's health from a scan, including when it produced no curve.
+
+    ``analyze_layer_wedge`` either returns a curve or raises. That is right for deriving a
+    profile and wrong for the loop this is built for: someone changing bleach and toning
+    between attempts needs to know *how far off* they are, and a failure that reports
+    nothing cannot be compared against the next failure.
+
+    Two scans, because they answer different questions and need different registration.
+    ``wedge_scan`` is a crop of the one slot, located by its own fiducials. ``sheet_scan``
+    is the whole print, used only for its corners — bare paper needs no registration, and
+    it is the reference the wedge alone cannot supply. A toning bath dyes the sheet, not
+    just the image, so paper white is not 100 and assuming it is hides the whole problem.
+    """
+    from .analyze import (
+        AnalysisError,
+        _response_plane,
+        detect_fiducials,
+        lightness,
+        sample_cells,
+    )
+
+    if isinstance(manifest, (str, Path)):
+        path = Path(manifest)
+        manifest_dir = manifest_dir or path.parent
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    if manifest_dir is None:
+        raise ValueError("manifest_dir is required when the manifest is passed as a dict")
+    if role not in PRINT_ORDER:
+        raise ValueError(f"unknown layer {role!r}; expected one of {PRINT_ORDER}")
+
+    wedge = manifest.get("wedge")
+    if not wedge:
+        raise TricolourSetError(f"this run has no wedges, so {role} cannot be diagnosed")
+    quantity = manifest["layers"][role]["response_quantity"]
+
+    sheet = cio.load_image(sheet_scan) if not hasattr(sheet_scan, "data") else sheet_scan
+    crop = cio.load_image(wedge_scan) if not hasattr(wedge_scan, "data") else wedge_scan
+
+    # Bare paper, from the four corners of the sheet. Median of the four, so one dirty
+    # corner or a thumbprint cannot set the floor on its own.
+    plane = _response_plane(sheet, quantity)
+    h, w = plane.shape[:2]
+    inset = max(8, int(min(h, w) * CORNER_INSET))
+    box = max(8, inset // 2)
+    corners = [
+        plane[inset : inset + box, inset : inset + box],
+        plane[inset : inset + box, w - inset - box : w - inset],
+        plane[h - inset - box : h - inset, inset : inset + box],
+        plane[h - inset - box : h - inset, w - inset - box : w - inset],
+    ]
+    stain_floor = float(lightness(np.array([np.median([np.median(c) for c in corners])]))[0])
+
+    sidecar = json.loads(
+        (Path(manifest_dir) / wedge["sidecars"][role]).read_text(encoding="utf-8")
+    )
+    frame = detect_fiducials(crop, sidecar)
+    samples = sample_cells(crop, sidecar, frame, quantity=quantity)
+    by_value: dict[int, list[float]] = {}
+    for s in samples:
+        by_value.setdefault(s["value"], []).append(s["response"])
+    top = sidecar["levels"] - 1
+    white = float(np.mean(by_value[top]))
+    black = float(np.mean(by_value[0]))
+    separation = white - black
+
+    notes: list[str] = []
+    if stain_floor < 90.0:
+        notes.append(
+            f"bare paper reads {stain_floor:.1f}, not ~95 — the sheet itself is stained, "
+            "so nothing on it can be lighter than this"
+        )
+    if stain_floor - white > FOG_TOLERANCE:
+        notes.append(
+            f"fully-blocked patches read {stain_floor - white:.1f} below bare paper — "
+            "coated areas darkened where no UV reached them, so the highlight end is "
+            "limited by the chemistry rather than by exposure"
+        )
+    if separation < MIN_SEPARATION:
+        notes.append(
+            "the negative's densest and clearest patches printed the same — the process "
+            "did not separate, rather than separating badly"
+        )
+
+    analysis = None
+    if separation >= MIN_SEPARATION:
+        try:
+            analysis = analyze_layer_wedge(
+                manifest, role, wedge_scan, manifest_dir=manifest_dir
+            )
+        except AnalysisError as exc:  # pragma: no cover - defensive
+            notes.append(f"curve fitting still failed: {exc}")
+
+    return LayerDiagnosis(
+        role=role,
+        quantity=quantity,
+        stain_floor=stain_floor,
+        wedge_white=white,
+        wedge_black=black,
+        separation=separation,
+        separated=separation >= MIN_SEPARATION,
+        analysis=analysis,
+        notes=notes,
+    )
 
 
 def darkroom_sheet(manifest: dict[str, Any]) -> str:
